@@ -102,6 +102,25 @@ class Tickets(unittest.TestCase):
             self.p.tk('set', 'T1', 'nonsense')
         self.assertIn('nothing', self.p.tk('done', 'T99'))
 
+    def test_show_and_list_filter(self):
+        self.p.tk('new', 'First')
+        self.p.tk('new', 'Second', '-b', 'T1')
+        self.p.tk('set', 'T1', 'ready'); self.p.tk('set', 'T2', 'ready')
+        out = self.p.tk('show', 'T2')
+        self.assertIn('T2-second.md', out)
+        self.assertIn('title: Second', out)
+        self.assertIn('## Done when', out)
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.p.tk('show', 'T99')
+        ready = self.p.tk('list', 'ready')
+        self.assertIn('First', ready)
+        self.assertNotIn('Second', ready)          # waits for T1: blocked, not ready
+        self.assertIn('Second', self.p.tk('list', 'blocked'))
+        self.p.tk('done', 'T1')
+        self.assertIn('First', self.p.tk('list', 'done'))   # a done filter needs no --all
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.p.tk('list', 'nonsense')
+
     def test_commit_hook_warns_on_unknown_id(self):
         self.p.tk('new', 'A')
         r = subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'Typo (T9)'],

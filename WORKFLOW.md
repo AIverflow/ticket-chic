@@ -61,7 +61,8 @@ Optional, independent. Judge each on its own question.
 | Command | Does |
 |---|---|
 | `new "Title" [-d 1\|2\|3] [-s S\|M\|L] [-b T1,T2]` | creates the next ticket from a template |
-| `list [--all]` | prints open tickets (all with `--all`) |
+| `list [<status>] [--all]` | prints open tickets (all with `--all`, one status with e.g. `list ready`) |
+| `show T12` | prints one ticket file |
 | `set T12 <status>` | changes status; `done` moves the file to `done/`, anything else moves it back |
 | `done T12 [T13 …] [--commit <hash>]` | same as `set … done`, records the commit |
 | `board` | rewrites `board.html` |

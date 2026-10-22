@@ -2,7 +2,8 @@
 """Ticket tool. One markdown file per ticket in .tickets/ (open) or .tickets/done/ (finished).
 Each file starts with a frontmatter block (status, difficulty, size, blocked_by).
   tickets.py new "Title" [-d 1|2|3] [-s S|M|L] [-b T1,T2]   create the next ticket
-  tickets.py list [--all]                                    print the tickets
+  tickets.py list [<status>] [--all]                         print the tickets (only that status if given)
+  tickets.py show T12                                        print one ticket file
   tickets.py set T12 <status>                                change status (done moves the file to done/)
   tickets.py done T12 [T13 ...] [--commit <hash>]            same as set <id> done
   tickets.py board                                           write board.html (filters, search, details)
@@ -254,7 +255,8 @@ def main(argv):
     n = sub.add_parser('new'); n.add_argument('title')
     n.add_argument('-d', '--difficulty', choices=list(DIFF_ICON)); n.add_argument('-s', '--size', choices=['S', 'M', 'L', 's', 'm', 'l'])
     n.add_argument('-b', '--blocked-by', default='')
-    l = sub.add_parser('list'); l.add_argument('--all', action='store_true')
+    l = sub.add_parser('list'); l.add_argument('status', nargs='?'); l.add_argument('--all', action='store_true')
+    sh = sub.add_parser('show'); sh.add_argument('id')
     s = sub.add_parser('set'); s.add_argument('id'); s.add_argument('status')
     d = sub.add_parser('done'); d.add_argument('ids', nargs='+'); d.add_argument('--commit', default='')
     for c in ('board', 'commit-hook'):
@@ -264,12 +266,17 @@ def main(argv):
         tid, path = new_ticket(a.title, a.difficulty, a.size, a.blocked_by)
         print(tid, path); board()
     elif a.cmd == 'list':
+        if a.status and a.status not in STATUS:
+            sys.exit('unknown status %r (known: %s)' % (a.status, ', '.join(STATUS)))
         ts = all_tickets()
         by_id = {t['id']: t for t in ts}
         for t in sorted(ts, key=lambda t: (STATUS[effective(t, by_id)[0]][1], num(t))):
             key, _ = effective(t, by_id)
-            if key != 'done' or a.all:
+            if (key == a.status) if a.status else (key != 'done' or a.all):
                 print('%-6s %-8s %s %-2s %s' % (t['id'], key, DIFF_ICON.get(t['difficulty'], ' '), t['size'], t['title']))
+    elif a.cmd == 'show':
+        t = {t['id']: t for t in all_tickets()}.get(a.id) or sys.exit('unknown ticket id: ' + a.id)
+        print(t['path']); print(open(t['path'], encoding='utf-8').read(), end='')
     elif a.cmd == 'set':
         print('changed:', set_status([a.id], a.status) or 'nothing (unknown id)'); board()
     elif a.cmd == 'done':

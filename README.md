@@ -28,7 +28,8 @@ A small, personal ticket system for any project: markdown files with a frontmatt
 ```bash
 python3 .tickets/tickets.py new "Fix the seek bug" -d 2 -s S
 python3 .tickets/tickets.py set T3 ready
-python3 .tickets/tickets.py list
+python3 .tickets/tickets.py list         # or: list ready
+python3 .tickets/tickets.py show T3
 python3 .tickets/tickets.py board        # then open .tickets/board.html
 git commit -m "Fix seek on resume (T3)"   # the hook moves T3 to done/
 ```
