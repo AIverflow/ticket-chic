@@ -1,4 +1,11 @@
-import json, os, shutil, subprocess, sys, tempfile, unittest
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOURCE = None
@@ -48,7 +55,7 @@ class Project:
         return open(os.path.join(self.t, *p), encoding='utf-8').read()
 
     def files(self, sub=''):
-        return sorted(f for f in os.listdir(os.path.join(self.t, sub)) if f.startswith('T') and f.endswith('.md'))
+        return sorted(f for f in os.listdir(os.path.join(self.t, sub)) if f[:1] in 'TL' and f.endswith('.md'))
 
 
 class Tickets(unittest.TestCase):
@@ -178,6 +185,66 @@ class CustomConfig(unittest.TestCase):
         p.tk('set', 'V1', 'todo')
         with self.assertRaises(subprocess.CalledProcessError):
             p.tk('set', 'V1', 'ready')
+
+
+class MultiUser(unittest.TestCase):
+    """Optional: several prefixes, a name on doing, sync and auto-commit of .tickets/."""
+    def setUp(self):
+        self.p = Project()
+        self.addCleanup(shutil.rmtree, self.p.dir)
+
+    def config(self, **kw):
+        json.dump(dict({'title': 'x', 'id_prefix': 'T'}, **kw), open(os.path.join(self.p.t, 'config.json'), 'w'))
+
+    def test_one_prefix_per_machine(self):
+        self.config(id_prefix=['T', 'L'])
+        self.p.tk('new', 'Desk')
+        with mock.patch.dict(os.environ, {'TICKETS_PREFIX': 'L'}):
+            self.p.tk('new', 'Laptop one'); self.p.tk('new', 'Laptop two')
+            with self.assertRaises(subprocess.CalledProcessError):
+                with mock.patch.dict(os.environ, {'TICKETS_PREFIX': 'X'}):
+                    self.p.tk('new', 'Bad')
+        self.assertEqual(self.p.files(), ['L1-laptop-one.md', 'L2-laptop-two.md', 'T1-desk.md'])
+        self.p.sh('git', 'commit', '-q', '--allow-empty', '-m', 'Work (T1, L1 to L2)')
+        self.assertEqual(self.p.files(), [])
+
+    def test_doing_records_who(self):
+        self.p.tk('new', 'A')
+        self.p.tk('set', 'T1', 'doing')
+        self.assertIn('by: t', self.p.read('T1-a.md'))
+        self.assertIn('by t', self.p.read('board.html'))
+
+    def test_sync_without_remote_only_commits(self):
+        self.p.tk('new', 'A')
+        out = self.p.tk('sync')
+        self.assertIn('no remote', out)
+        self.assertEqual(self.p.tg('status', '--porcelain'), '')
+
+    def test_sync_with_remote(self):
+        remote = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, remote)
+        self.p.sh('git', 'init', '-q', '--bare', remote)
+        self.p.tg('remote', 'add', 'share', remote)
+        self.p.tg('push', '-q', '-u', 'share', 'main')
+        other = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, other)
+        self.p.sh('git', 'clone', '-q', '-b', 'main', remote, other)
+        open(os.path.join(other, 'L1-from-laptop.md'), 'w').write('---\ntitle: From laptop\nstatus: open\n---\n')
+        for a in (['add', '.'], ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'laptop'], ['push', '-q']):
+            self.p.sh('git', '-C', other, *a)
+        self.p.tk('new', 'From desk')
+        self.p.tk('sync')
+        self.assertIn('L1-from-laptop.md', self.p.files())
+        self.assertIn('T1-from-desk.md', self.p.sh('git', '-C', remote, 'ls-tree', '--name-only', 'main'))
+
+    def test_hook_auto_commit(self):
+        self.config(auto_commit=True)
+        self.p.tg('commit', '-q', '-am', 'config')
+        self.p.tk('new', 'A')
+        open(os.path.join(self.p.dir, 'f'), 'w').write('x')
+        self.p.sh('git', 'add', 'f')
+        self.p.sh('git', 'commit', '-q', '-m', 'Work (T1)')
+        self.assertEqual(self.p.tg('status', '--porcelain'), '')
+        self.assertIn('T1', self.p.tg('log', '-1', '--format=%s'))
+        self.assertEqual(self.p.sh('git', 'diff', '--cached', '--name-only'), '')   # the project's index is untouched
 
 
 class Safety(unittest.TestCase):

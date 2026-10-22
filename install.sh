@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install the ticket system in a project, or update it. Run it from the ticketing repo:
+# Install the ticket system in a project, or update it. Run it from the ticket-chic repo:
 #   ./install.sh <project-dir>
 # First run: .tickets/ becomes a clone of this repo (branch `core` = the system), with its own branch `main`
 # for the project's tickets and config. Next runs: fetch `core` and merge it into `main`.

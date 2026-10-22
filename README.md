@@ -1,6 +1,12 @@
-# ticketing
+# ticket-chic
 
-A small, personal ticket system for any project: markdown files with a frontmatter, a static HTML board, a git hook that finishes tickets from commit subjects. One Python file, standard library only.
+A minimal ticket system for your projects and the AI agents working on them. One script installs it; it needs only git and Python, no packages.
+
+- **Minimal.** One Python file (about 350 lines, standard library only). An agent can read the whole system in a minute.
+- **Plain files.** One markdown file per ticket in `.tickets/`, with a short frontmatter. You can read, grep and diff them like code.
+- **A real board.** `board.html` is a static page with status filters, search and the full text of each ticket. Open it in a browser; no server.
+- **Commits close tickets.** End a commit subject with `(T12)` and a git hook moves T12 to `done/` with the commit hash.
+- **Made for agents.** Each ticket has a difficulty (which model is smart enough) and a size (how much work). Optional modules give agents roles and worktree rules.
 
 ```
 .tickets/
@@ -58,6 +64,14 @@ Details in [`WORKFLOW.md`](WORKFLOW.md). Optional modules: [`worktrees`](modules
  "statuses": [["ready", "Ready", "#4ea1ff"], ["open", "Open", "#f0b429"], ["done", "Done", "#3fb950"]]}
 ```
 `done` must stay in `statuses`. The board shows statuses in the listed order.
+
+## Several machines or people (optional, lightly tested)
+Off by default; nothing changes until you use it.
+- Share `.tickets/` through its own git remote: `git -C .tickets push -u <remote> main` once, then `python3 .tickets/tickets.py sync` commits, pulls and pushes the tickets.
+- One prefix per machine or person, so numbers never clash: `"id_prefix": ["T", "L"]` in `config.json`, and `export TICKETS_PREFIX=L` on the second one.
+- `"auto_commit": true` in `config.json`: the hook also commits `.tickets/` after closing tickets.
+- `set T12 doing` records `by: <git user.name>` in the ticket; the board shows it.
+It works for a few people who sync often. It is not a team tracker.
 
 ## Tests
 ```bash

@@ -9,7 +9,7 @@ Everything lives in `.tickets/`:
 - `done/T<n>-<slug>.md`: finished tickets (same file, moved).
 - `board.html`: the table Dave reads (status filters, search, details). Built by `tickets.py`, never edited.
 - `config.json` (optional): board title, ID prefix, statuses.
-- `WORKFLOW.md`, `tickets.py`, `hooks/`, `modules/`, `README.md`, `tests/`, `install.sh`: the system (git branch `core`). Don't edit them in a project: change them in the `ticketing` repo, then update.
+- `WORKFLOW.md`, `tickets.py`, `hooks/`, `modules/`, `README.md`, `tests/`, `install.sh`: the system (git branch `core`). Don't edit them in a project: change them in the `ticket-chic` repo, then update.
 
 `.tickets/` is its own git repo, independent of the project's. Its branch `main` holds this project's tickets and config (commit them there); branch `core` is the system and is only updated by `install.sh`. The project's repo ignores `.tickets/`.
 
@@ -66,6 +66,7 @@ Optional, independent. Judge each on its own question.
 | `set T12 <status>` | changes status; `done` moves the file to `done/`, anything else moves it back |
 | `done T12 [T13 …] [--commit <hash>]` | same as `set … done`, records the commit |
 | `board` | rewrites `board.html` |
+| `sync` | commits `.tickets/`, then pulls and pushes if `main` has a remote (see README, optional) |
 
 **The hook finishes tickets.** A commit whose subject ends with ticket ID(s) in parentheses, e.g. `Strobe grid: demo uses real sizes (T88)` or `(T64, T67 to T71)`, moves them to `done/` with the commit hash and rebuilds the board.
 So: **an ID in parentheses at the end of the subject means finished. Never use it for partial work** (write `T88 part 1` without parentheses).

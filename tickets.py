@@ -7,9 +7,19 @@ Each file starts with a frontmatter block (status, difficulty, size, blocked_by)
   tickets.py set T12 <status>                                change status (done moves the file to done/)
   tickets.py done T12 [T13 ...] [--commit <hash>]            same as set <id> done
   tickets.py board                                           write board.html (filters, search, details)
+  tickets.py sync                                            commit .tickets/, then pull and push if it has a remote
   tickets.py commit-hook                                     post-commit: finishes the tickets named in the subject
-Optional .tickets/config.json: {"title": "...", "id_prefix": "T", "statuses": [[key, label, colour], ...]}"""
-import argparse, html, json, os, re, subprocess, sys, time
+Optional .tickets/config.json: {"title": "...", "id_prefix": "T", "statuses": [[key, label, colour], ...]}
+  id_prefix may be a list (["T", "L"]): `new` uses the first, or $TICKETS_PREFIX. "auto_commit": true makes the hook commit .tickets/."""
+import argparse
+import getpass
+import html
+import json
+import os
+import re
+import subprocess
+import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DONE_DIR = os.path.join(HERE, 'done')
@@ -37,7 +47,8 @@ def load_config():
 
 
 CFG = load_config()
-PREFIX = re.escape(CFG['id_prefix'])
+PREFIXES = CFG['id_prefix'] if isinstance(CFG['id_prefix'], list) else [CFG['id_prefix']]
+PREFIX = '(?:%s)' % '|'.join(map(re.escape, PREFIXES))
 STATUS = {s[0]: (s[1], i, s[2]) for i, s in enumerate(CFG['statuses'])}   # key -> (label, order, colour)
 FIRST = 'open' if 'open' in STATUS else CFG['statuses'][0][0]   # status of a new ticket
 ID_RE = re.compile(r'\b%s\d+[a-z]?\b' % PREFIX)
@@ -52,8 +63,8 @@ def split_fm(text):
     if not m:
         return {}, text
     meta = {}
-    for l in m.group(1).split('\n'):
-        k, sep, v = l.partition(':')
+    for line in m.group(1).split('\n'):
+        k, sep, v = line.partition(':')
         if sep and k.strip():
             meta[k.strip()] = v.strip()
     return meta, m.group(2)
@@ -65,7 +76,7 @@ def read_ticket(path, in_done):
         return None
     meta, body = split_fm(open(path, encoding='utf-8').read())
     body = body.strip()
-    title = meta.get('title') or next((l[2:].strip() for l in body.split('\n') if l.startswith('# ')), m.group(1))
+    title = meta.get('title') or next((line[2:].strip() for line in body.split('\n') if line.startswith('# ')), m.group(1))
     status = 'done' if in_done else meta.get('status', FIRST)
     if status not in STATUS:
         status = FIRST
@@ -73,7 +84,7 @@ def read_ticket(path, in_done):
             'difficulty': meta.get('difficulty') if meta.get('difficulty') in DIFF_ICON else '',
             'size': meta.get('size', '').upper() if meta.get('size', '').upper() in ('S', 'M', 'L') else '',
             'blocked_by': ID_RE.findall(meta.get('blocked_by', '')),
-            'note': meta.get('commit', ''), 'body': body}
+            'note': meta.get('commit', ''), 'by': meta.get('by', ''), 'body': body}
 
 
 def all_tickets():
@@ -99,8 +110,8 @@ def set_meta(path, updates):
     m = FM_RE.match(text)
     lines, body = (m.group(1).split('\n'), m.group(2)) if m else ([], text)
     for k, v in updates.items():
-        for i, l in enumerate(lines):
-            if l.partition(':')[0].strip() == k:
+        for i, line in enumerate(lines):
+            if line.partition(':')[0].strip() == k:
                 lines[i] = '%s: %s' % (k, v)
                 break
         else:
@@ -120,6 +131,8 @@ def set_status(ids, status, commit=''):
             print('unknown ticket id: ' + tid, file=sys.stderr)
             continue
         upd = {'status': status}
+        if status == 'doing':
+            upd['by'] = who()
         if status == 'done':
             upd['done'] = time.strftime('%Y-%m-%d')
             if commit:
@@ -135,9 +148,18 @@ def set_status(ids, status, commit=''):
     return changed
 
 
+def who():
+    r = subprocess.run(['git', '-C', os.path.dirname(HERE), 'config', 'user.name'], capture_output=True, text=True)
+    return r.stdout.strip() or getpass.getuser()
+
+
 def new_ticket(title, difficulty, size, blocked_by):
-    nums = [num(t)[0] for t in all_tickets()]
-    tid = '%s%d' % (CFG['id_prefix'], max(nums, default=0) + 1)
+    prefix = os.environ.get('TICKETS_PREFIX') or PREFIXES[0]
+    if prefix not in PREFIXES:
+        sys.exit('TICKETS_PREFIX %r is not in config.json id_prefix %s' % (prefix, PREFIXES))
+    own = re.compile(r'%s\d+[a-z]?' % re.escape(prefix))
+    nums = [num(t)[0] for t in all_tickets() if own.fullmatch(t['id'])]
+    tid = '%s%d' % (prefix, max(nums, default=0) + 1)
     slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:50]
     path = os.path.join(HERE, '%s-%s.md' % (tid, slug) if slug else tid + '.md')
     fm = ['title: ' + title, 'status: ' + FIRST]
@@ -182,7 +204,7 @@ def board():
             f'<td class="ti">{html.escape(t["title"])}'
             f'<details><summary>details</summary><pre>{html.escape(t["body"])}</pre></details></td>'
             f'<td><span class="b" style="--c:{html.escape(col)}">{html.escape(label)}</span></td>'
-            f'<td class="sm">{html.escape(wait or t["note"])}</td></tr>')
+            f'<td class="sm">{html.escape(wait or ("by " + t["by"] if key == "doing" and t["by"] else t["note"]))}</td></tr>')
     chips =''.join(f'<button class="chip" data-k="{html.escape(k)}" style="--c:{html.escape(v[2])}">{html.escape(v[0])} <b>{counts[k]}</b></button>'
                     for k, v in STATUS.items())
     title = html.escape(CFG['title'])
@@ -224,13 +246,13 @@ q.oninput=apply; apply();
 
 def ids_in_subject(subject):
     """IDs inside a trailing '(...)' of a commit subject: '(T64, T67 to T71)' -> T64, T67, ..., T71. '(see T95)' does not count."""
-    p = CFG['id_prefix']
     m = re.search(r'\((%s\d+[a-z]?(?:\s*(?:,|and|to)\s*%s\d+[a-z]?)*)\)\s*$' % (PREFIX, PREFIX), subject)
     if not m:
         return []
     inner, ids = m.group(1), []
-    for a, b in re.findall(r'\b%s(\d+)\s+to\s+%s(\d+)\b' % (PREFIX, PREFIX), inner):
-        ids += ['%s%d' % (p, n) for n in range(int(a), int(b) + 1)]
+    for pa, a, pb, b in re.findall(r'\b(%s)(\d+)\s+to\s+(%s)(\d+)\b' % (PREFIX, PREFIX), inner):
+        if pa == pb:
+            ids += ['%s%d' % (pa, n) for n in range(int(a), int(b) + 1)]
     inner = re.sub(r'\b%s\d+\s+to\s+%s\d+\b' % (PREFIX, PREFIX), '', inner)
     ids += ID_RE.findall(inner)
     return list(dict.fromkeys(ids))
@@ -240,12 +262,42 @@ def git(*a):
     return subprocess.run(['git', *a], capture_output=True, text=True, check=True).stdout.strip()
 
 
+def tgit(*a):
+    """git inside .tickets/. GIT_* variables are dropped: inside a hook they point at the project's repo."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+    return subprocess.run(['git', '-C', HERE, *a], capture_output=True, text=True, env=env)
+
+
+def commit_tickets(message):
+    tgit('add', '-A')
+    if tgit('diff', '--cached', '--quiet').returncode:
+        r = tgit('commit', '-q', '-m', message)
+        if r.returncode:
+            sys.exit(r.stderr.strip() or 'git commit failed in ' + HERE)
+
+
+def sync():
+    commit_tickets('Tickets: sync')
+    up = tgit('rev-parse', '--abbrev-ref', '@{upstream}')
+    if up.returncode:
+        print('no remote for this branch: committed locally only. To share: git -C %s push -u <remote> <branch>' % HERE)
+        return
+    for a in (['pull', '-q', '--rebase'], ['push', '-q']):
+        r = tgit(*a)
+        if r.returncode:
+            sys.exit(r.stderr.strip() or 'git %s failed' % a[0])
+    board()
+    print('synced with', up.stdout.strip())
+
+
 def commit_hook():
     h, subject = git('log', '-1', '--format=%h%n%s').split('\n', 1)
     ids = ids_in_subject(subject)
     moved = set_status(ids, 'done', h) if ids else []
     if moved:
         board()
+        if CFG.get('auto_commit'):
+            commit_tickets('Done: %s (%s)' % (', '.join(moved), h))
         print('tickets: done: ' + ', '.join(moved), file=sys.stderr)
 
 
@@ -255,11 +307,11 @@ def main(argv):
     n = sub.add_parser('new'); n.add_argument('title')
     n.add_argument('-d', '--difficulty', choices=list(DIFF_ICON)); n.add_argument('-s', '--size', choices=['S', 'M', 'L', 's', 'm', 'l'])
     n.add_argument('-b', '--blocked-by', default='')
-    l = sub.add_parser('list'); l.add_argument('status', nargs='?'); l.add_argument('--all', action='store_true')
+    ls = sub.add_parser('list'); ls.add_argument('status', nargs='?'); ls.add_argument('--all', action='store_true')
     sh = sub.add_parser('show'); sh.add_argument('id')
     s = sub.add_parser('set'); s.add_argument('id'); s.add_argument('status')
     d = sub.add_parser('done'); d.add_argument('ids', nargs='+'); d.add_argument('--commit', default='')
-    for c in ('board', 'commit-hook'):
+    for c in ('board', 'sync', 'commit-hook'):
         sub.add_parser(c)
     a = ap.parse_args(argv)
     if a.cmd == 'new':
@@ -283,6 +335,8 @@ def main(argv):
         print('done:', set_status(a.ids, 'done', a.commit) or 'nothing (unknown id)'); board()
     elif a.cmd == 'board' or a.cmd is None:
         board()
+    elif a.cmd == 'sync':
+        sync()
     elif a.cmd == 'commit-hook':
         commit_hook()
 
