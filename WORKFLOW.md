@@ -68,9 +68,9 @@ Optional, independent. Judge each on its own question.
 | `board` | rewrites `board.html` |
 | `sync` | commits `.tickets/`, then pulls and pushes if `main` has a remote (see README, optional) |
 
-**The hook finishes tickets.** A commit whose subject ends with ticket ID(s) in parentheses, e.g. `Strobe grid: demo uses real sizes (T88)` or `(T64, T67 to T71)`, moves them to `done/` with the commit hash and rebuilds the board.
+**The hook finishes tickets.** A commit whose subject ends with ticket ID(s) in parentheses, e.g. `Login: retry after timeout (T88)` or `(T64, T67 to T71)`, moves them to `done/` with the commit hash and rebuilds the board.
 So: **an ID in parentheses at the end of the subject means finished. Never use it for partial work** (write `T88 part 1` without parentheses).
-An ID that matches no ticket changes nothing and prints `unknown ticket id`. The hook moves files inside `.tickets/` but does not commit them: commit them on `main` (in `.tickets/`) after your work commit.
+An ID that matches no ticket changes nothing and prints `unknown ticket id`. The hook moves files inside `.tickets/` but does not commit them (unless config.json sets `auto_commit`, see README): commit them on `main` (in `.tickets/`) after your work commit.
 
 ## Rules for any agent
 - Ticket files are the source of truth. Don't track work anywhere else.

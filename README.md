@@ -1,4 +1,4 @@
-# ticket-chic
+# Ticket-Chic
 
 A minimal ticket system for your projects and the AI agents working on them. One script installs it; it needs only git and Python, no packages.
 
@@ -10,8 +10,8 @@ A minimal ticket system for your projects and the AI agents working on them. One
 
 ```
 .tickets/
-  T12-strobe-grid.md        open ticket (frontmatter + free text)
-  done/T11-fix-seek.md      finished ticket
+  T12-login-timeout.md      open ticket (frontmatter + free text)
+  done/T11-fix-export.md    finished ticket
   board.html                generated dashboard
   config.json               optional: title, ID prefix, statuses
   WORKFLOW.md  tickets.py  hooks/  modules/   (the system, from branch core)
@@ -32,18 +32,18 @@ A minimal ticket system for your projects and the AI agents working on them. One
 
 ## Use
 ```bash
-python3 .tickets/tickets.py new "Fix the seek bug" -d 2 -s S
+python3 .tickets/tickets.py new "Fix the export bug" -d 2 -s S
 python3 .tickets/tickets.py set T3 ready
 python3 .tickets/tickets.py list         # or: list ready
 python3 .tickets/tickets.py show T3
 python3 .tickets/tickets.py board        # then open .tickets/board.html
-git commit -m "Fix seek on resume (T3)"   # the hook moves T3 to done/
+git commit -m "Fix export on empty list (T3)"   # the hook moves T3 to done/
 ```
 
 ## Ticket format
 ```
 ---
-title: Fix the seek bug
+title: Fix the export bug
 status: ready
 difficulty: 2
 size: S
@@ -63,14 +63,18 @@ Details in [`WORKFLOW.md`](WORKFLOW.md). Optional modules: [`worktrees`](modules
 {"title": "My project", "id_prefix": "T",
  "statuses": [["ready", "Ready", "#4ea1ff"], ["open", "Open", "#f0b429"], ["done", "Done", "#3fb950"]]}
 ```
-`done` must stay in `statuses`. The board shows statuses in the listed order.
+`done` must stay in `statuses`; `blocked` is added before it if missing. The board shows statuses in the listed order.
+`id_prefix` is letters only.
 
 ## Several machines or people (optional, lightly tested)
 Off by default; nothing changes until you use it.
 - Share `.tickets/` through its own git remote: `git -C .tickets push -u <remote> main` once, then `python3 .tickets/tickets.py sync` commits, pulls and pushes the tickets.
+- Do not use `origin` as the shared remote: in `.tickets/`, `origin` is the ticket-chic repo it was installed from.
+- A second machine joins: `git clone <remote> /path/to/project/.tickets`, then `./install.sh /path/to/project` to install the hook.
 - One prefix per machine or person, so numbers never clash: `"id_prefix": ["T", "L"]` in `config.json`, and `export TICKETS_PREFIX=L` on the second one.
 - `"auto_commit": true` in `config.json`: the hook also commits `.tickets/` after closing tickets.
 - `set T12 doing` records `by: <git user.name>` in the ticket; the board shows it.
+- Anyone who can push to the shared remote can change `tickets.py`, which the commit hook runs on every machine: only share with people you trust.
 It works for a few people who sync often. It is not a team tracker.
 
 ## Tests

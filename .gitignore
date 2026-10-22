@@ -7,3 +7,5 @@ board.html
 .idea/
 .venv/
 .DS_Store
+.lock
+*.tmp
