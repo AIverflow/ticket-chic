@@ -10,7 +10,9 @@ Each file starts with a frontmatter block (status, difficulty, size, blocked_by)
   tickets.py sync                                            commit .tickets/, then pull and push if it has a remote
   tickets.py commit-hook                                     post-commit: finishes the tickets named in the subject
 Optional .tickets/config.json: {"title": "...", "id_prefix": "T" (letters), "statuses": [[key, label, colour], ...]}
-  id_prefix may be a list (["T", "L"]): `new` uses the first, or $TICKETS_PREFIX. "auto_commit": true makes the hook commit .tickets/."""
+  id_prefix may be a list (["T", "L"]): `new` uses the first, or $TICKETS_PREFIX.
+  "auto_commit" (default true): after new, set, done and the hook, commit .tickets/ in its own repo (never pushes).
+  "mode": "chain" (default) or "validate". Other keys ("roles", "worktrees", "worktree_dir") are read by agents, not here."""
 from __future__ import annotations
 
 import argparse
@@ -91,6 +93,10 @@ def load_config() -> Dict[str, Any]:
     c.setdefault('title', os.path.basename(os.path.dirname(HERE)) or 'Project')
     c.setdefault('id_prefix', 'T')
     c.setdefault('statuses', DEFAULT_STATUSES)
+    c.setdefault('auto_commit', True)
+    c.setdefault('mode', 'chain')
+    if c['mode'] not in ('chain', 'validate'):
+        sys.exit('config.json: mode must be "chain" or "validate", got %r' % (c['mode'],))
     if not isinstance(c['statuses'], list) or not all(isinstance(s, list) and len(s) == 3 for s in c['statuses']):
         sys.exit('config.json: statuses must be a list of [key, label, colour]')
     keys = [s[0] for s in c['statuses']]
@@ -379,6 +385,22 @@ def commit_unlocked(message: str) -> None:
             sys.exit(r.stderr.strip() or 'git commit failed in ' + HERE)
 
 
+def auto_commit(message: str) -> None:
+    """config auto_commit: commit .tickets/ after a change. Best effort: a problem is a warning, never a failure. Never pushes."""
+    if not CFG['auto_commit']:
+        return
+    try:
+        top = tgit('rev-parse', '--show-toplevel').stdout.strip()
+        if not top or os.path.realpath(top) != os.path.realpath(HERE):
+            sys.exit('%s is not its own git repo' % HERE)
+        commit_tickets(message)
+    except SystemExit as e:
+        reason = str(e.code) if isinstance(e.code, str) else 'git failed'
+        print('tickets: not committed: ' + ' '.join(reason.split()), file=sys.stderr)
+    except OSError as e:
+        print('tickets: not committed: %s' % e, file=sys.stderr)
+
+
 def sync() -> None:
     with locked():   # the pull changes ticket files: no other writer meanwhile
         commit_unlocked('Tickets: sync')
@@ -404,8 +426,7 @@ def commit_hook() -> None:
     moved = set_status(ids, 'done', h) if ids else []
     if moved:
         board()
-        if CFG.get('auto_commit'):
-            commit_tickets('Done: %s (%s)' % (', '.join(moved), h))
+        auto_commit('Done: %s (%s)' % (', '.join(moved), h))
         print('tickets: done: ' + ', '.join(moved), file=sys.stderr)
 
 
@@ -425,6 +446,7 @@ def main(argv: List[str]) -> None:
     if a.cmd == 'new':
         tid, path = new_ticket(a.title, a.difficulty, a.size, a.blocked_by)
         print(tid, path); board()
+        auto_commit('New: ' + tid)
     elif a.cmd == 'list':
         if a.status and a.status not in STATUS:
             sys.exit('unknown status %r (known: %s)' % (a.status, ', '.join(STATUS)))
@@ -441,9 +463,15 @@ def main(argv: List[str]) -> None:
             text = read(t['path'])
         print(t['path']); print(text, end='')
     elif a.cmd == 'set':
-        print('changed:', set_status([a.id], a.status) or 'nothing (unknown id)'); board()
+        changed = set_status([a.id], a.status)
+        print('changed:', changed or 'nothing (unknown id)'); board()
+        if changed:
+            auto_commit('%s: %s' % (a.id, a.status))
     elif a.cmd == 'done':
-        print('done:', set_status(a.ids, 'done', a.commit) or 'nothing (unknown id)'); board()
+        changed = set_status(a.ids, 'done', a.commit)
+        print('done:', changed or 'nothing (unknown id)'); board()
+        if changed:
+            auto_commit('Done: %s%s' % (', '.join(changed), ' (%s)' % a.commit if a.commit else ''))
     elif a.cmd == 'board' or a.cmd is None:
         board()
     elif a.cmd == 'sync':

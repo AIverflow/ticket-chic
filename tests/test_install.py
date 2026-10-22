@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -180,6 +181,83 @@ class InstallHook(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(t, 'extra.txt')))
         self.assertEqual(sh('git', 'rev-parse', 'scratch', cwd=t), sh('git', 'rev-parse', 'main', cwd=t))
         self.assertNotEqual(sh('git', 'rev-parse', 'core', cwd=t), sh('git', 'rev-parse', 'scratch', cwd=t))
+
+
+class FirstInstallConfig(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = os.path.join(self.tmp.name, 'My App')
+        os.mkdir(self.repo)
+        sh('git', 'init', '-q', cwd=self.repo)
+        self.cfg = os.path.join(self.repo, '.tickets', 'config.json')
+        self.hook = os.path.join(self.repo, '.git', 'hooks', 'post-commit')
+
+    def test_non_interactive_uses_defaults(self):
+        r = subprocess.run([os.path.join(SOURCE, 'install.sh'), self.repo], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, check=True)
+        self.assertEqual(json.load(open(self.cfg)), {
+            'title': 'My App', 'id_prefix': 'T', 'auto_commit': True, 'roles': True, 'worktrees': False, 'mode': 'chain'})
+        self.assertTrue(os.path.exists(self.hook))
+        self.assertIn('Change any setting in .tickets/config.json', r.stdout)
+        self.assertEqual(sh('git', 'status', '--porcelain', cwd=os.path.join(self.repo, '.tickets')), '')   # config is committed
+
+    def test_update_keeps_config_and_prints_no_recap(self):
+        subprocess.run([os.path.join(SOURCE, 'install.sh'), self.repo], capture_output=True, stdin=subprocess.DEVNULL, check=True)
+        c = json.load(open(self.cfg))
+        c['mode'] = 'validate'
+        json.dump(c, open(self.cfg, 'w'))
+        r = subprocess.run([os.path.join(SOURCE, 'install.sh'), self.repo], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, check=True)
+        self.assertEqual(json.load(open(self.cfg))['mode'], 'validate')
+        self.assertNotIn('Change any setting', r.stdout)
+
+    def ask(self, answers):
+        """Run install.sh with a pty as stdin and type the answers (one line each)."""
+        import pty
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execv(os.path.join(SOURCE, 'install.sh'), ['install.sh', self.repo])
+        out = b''
+        for a in answers:
+            while not out.rstrip().endswith((b']', b']:')) and not out.endswith(b': '):
+                out += os.read(fd, 4096)
+            os.write(fd, a.encode() + b'\n')
+            out = b''
+        while True:
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+        _, status = os.waitpid(pid, 0)
+        self.assertEqual(status, 0)
+
+    def test_interactive_answers(self):
+        self.ask(['Shop', 'y', '/srv/wt/shop', 'n'])
+        c = json.load(open(self.cfg))
+        self.assertEqual((c['title'], c['worktrees'], c['worktree_dir']), ('Shop', True, '/srv/wt/shop'))
+        self.assertFalse(os.path.exists(self.hook))
+
+    def test_interactive_relative_worktree_folder_is_rejected_then_full_path_accepted(self):
+        self.ask(['Shop', 'y', 'rel/dir', '../x', '/srv/wt/shop', 'n'])
+        self.assertEqual(json.load(open(self.cfg))['worktree_dir'], '/srv/wt/shop')
+
+    def test_interactive_tilde_worktree_folder_is_expanded(self):
+        self.ask(['Shop', 'y', '~/wt/shop', 'n'])
+        self.assertEqual(json.load(open(self.cfg))['worktree_dir'], os.path.expanduser('~/wt/shop'))
+
+    def test_interactive_enter_gives_defaults(self):
+        self.ask(['', '', ''])
+        c = json.load(open(self.cfg))
+        self.assertEqual((c['title'], c['worktrees']), ('My App', False))
+        self.assertNotIn('worktree_dir', c)
+        self.assertTrue(os.path.exists(self.hook))
+
+    def test_interactive_default_worktree_folder_is_expanded(self):
+        self.ask(['', 'y', '', ''])
+        self.assertEqual(json.load(open(self.cfg))['worktree_dir'], os.path.expanduser('~/worktrees/My App'))
 
 
 if __name__ == '__main__':

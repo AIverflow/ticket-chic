@@ -1,14 +1,27 @@
 # Ticket workflow
 
-Core rules. They say nothing about branches, worktrees, agents or models. Those are optional modules (`modules/`).
-Dave (the owner) reads the board, not the files: when you report, give each ticket as ID + one plain sentence.
+Core rules. Branch, worktree, agent and model rules are in the modules (`modules/`), switched on in `config.json` (see Settings).
+Dave (the owner) reads the board, not the files: when you report, give each ticket as ID + one plain sentence, and always say where to test: folder path and branch.
+
+## Settings
+Before each ticket, read the switches in `.tickets/config.json`. A missing key means the default. Edit the file any time.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `auto_commit` | `true` | `tickets.py` commits `.tickets/` after every change (new, set, done, hook). Never pushes |
+| `roles` | `true` | follow `modules/roles.md` |
+| `worktrees` | `false` | allow a worktree per parallel ticket; if true, follow `modules/worktrees.md` |
+| `worktree_dir` | none | full path of the folder for worktrees (see `modules/worktrees.md`) |
+| `mode` | `chain` | `chain` or `validate`: how work is committed and checked (see Modes) |
+
+`tickets.py` reads `auto_commit` and `mode` (and the board settings); the other keys are for agents.
 
 ## Files
 Everything lives in `.tickets/`:
 - `T<n>-<slug>.md`: one file per open ticket.
 - `done/T<n>-<slug>.md`: finished tickets (same file, moved).
 - `board.html`: the table Dave reads (status filters, search, details). Built by `tickets.py`, never edited.
-- `config.json` (optional): board title, ID prefix, statuses.
+- `config.json` (optional): board title, ID prefix, statuses, the switches in Settings.
 - `WORKFLOW.md`, `tickets.py`, `hooks/`, `modules/`, `README.md`, `tests/`, `install.sh`: the system (git branch `core`). Don't edit them in a project: change them in the `ticket-chic` repo, then update.
 
 `.tickets/` is its own git repo, independent of the project's. Its branch `main` holds this project's tickets and config (commit them there); branch `core` is the system and is only updated by `install.sh`. The project's repo ignores `.tickets/`.
@@ -42,6 +55,7 @@ Only `title` and `status` matter. Everything else is optional. Free text goes be
 | `parked` | on purpose not touched; waits for Dave |
 | `done` | finished. The file is in `done/` |
 
+- Easy to mix up: **open** = not ready (idea, unclear) · **ready** = clear, can start · **blocked** = waits for something.
 - A `ready` or `open` ticket whose `blocked_by` tickets are not all done shows as **blocked** on the board. Nothing to edit: it becomes ready again when they are done.
 - Statuses are configurable in `config.json` (`done` must stay).
 
@@ -70,17 +84,42 @@ Optional, independent. Judge each on its own question.
 
 **The hook finishes tickets.** A commit whose subject ends with ticket ID(s) in parentheses, e.g. `Login: retry after timeout (T88)` or `(T64, T67 to T71)`, moves them to `done/` with the commit hash and rebuilds the board.
 So: **an ID in parentheses at the end of the subject means finished. Never use it for partial work** (write `T88 part 1` without parentheses).
-An ID that matches no ticket changes nothing and prints `unknown ticket id`. The hook moves files inside `.tickets/` but does not commit them (unless config.json sets `auto_commit`, see README): commit them on `main` (in `.tickets/`) after your work commit.
+An ID that matches no ticket changes nothing and prints `unknown ticket id`. With `auto_commit` (default) every change is committed in `.tickets/` (`New: T12`, `T12: doing`, `Done: T12 (<hash>)`); if it cannot (not its own repo, rebase in progress), it warns and goes on. With `auto_commit` off, commit them on `main` (in `.tickets/`) yourself.
+
+## Modes
+Dave picks the mode when he asks for the work ("chain" / "validate"). When he says nothing, use `mode` from `config.json`. Small tickets may be grouped in one run.
+
+**chain**: a list of small tickets done one after another. One commit per ticket, subject ends with `(T12)`; the hook closes it. Review is optional, e.g. one review at the end of the series. Dave checks after the series.
+
+**validate**: for a big or delicate ticket.
+1. Commit your work as you go on the ticket's branch **without** `(T12)`, so nothing is lost uncommitted and the ticket stays open.
+2. Review (an agent reviewer if `roles`, then Dave).
+3. Only after Dave's OK: the final commit or merge with `(T12)`. That closes the ticket.
+
+## Where the work happens
+| Work | Place |
+|---|---|
+| Small fix, one worker | directly on `main` |
+| Bigger or risky | a branch named `<ID>` |
+| Several tickets in parallel | a worktree per ticket, only if `worktrees` is true (`modules/worktrees.md`) |
+
+- Commit as soon as the checks pass. Never leave work uncommitted on a branch (or worktree) while waiting for a review or for Dave. In `validate` mode commit **without** `(<ID>)` (see Modes).
+- When you report, give the folder path and the branch to test.
+- The closing commit (`chain`: every ticket's commit; `validate`: only the final commit or merge, after Dave's OK) has the subject = what changed + `(<ID>)`. The hook finishes the ticket, in every worktree too, even before the merge. Check that `done/<ID>-*.md` exists; if not, run `tickets.py done <ID> --commit <hash>`.
+- **Never squash.** Merge with a fast-forward or a merge commit, so git can see the branch is contained in `main` (a squash leaves the branch looking unmerged and in conflict forever).
+- Right after a merge into `main`: remove its worktree (if any), then `git branch -d <ID>` (git refuses if it is not really merged: then keep it and say so). Stacked tickets: delete each one once the last of the stack is merged.
+- Never use `git branch -D` on a branch with unmerged work. Exception: Dave decides to drop one; first write `name sha subject` to `.tickets/notes/` so it can be restored with `git branch <name> <sha>`.
+- The orchestrator's final report states how many ticket branches are left and why.
 
 ## Rules for any agent
 - Ticket files are the source of truth. Don't track work anywhere else.
 - Change a status with the tool, not by moving files by hand.
 - Never commit `.tickets/` into the app repo (it has its own git). Commit tickets inside `.tickets/`, on `main`.
 
-## Optional modules
-Already in `.tickets/modules/`; the project's `AGENTS.md` says which ones apply.
-- [`modules/worktrees.md`](modules/worktrees.md): one branch + worktree per ticket, shared git rules.
-- [`modules/roles.md`](modules/roles.md): orchestrator / implementer / reviewer, agent tiers, STOP rule.
+## Modules
+In `.tickets/modules/`; the switches in `config.json` say which ones apply.
+- [`modules/worktrees.md`](modules/worktrees.md) (`worktrees`): setup, shared-repo git rules and cleanup for worktrees.
+- [`modules/roles.md`](modules/roles.md) (`roles`): orchestrator / implementer / reviewer, agent tiers, STOP rule.
 
 ## In the project
 The project's `AGENTS.md` needs one line: "Before any ticket, read `.tickets/WORKFLOW.md`." Test commands, invariants and commit style stay in `AGENTS.md`, not here.

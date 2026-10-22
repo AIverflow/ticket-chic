@@ -78,8 +78,7 @@ class Tickets(unittest.TestCase):
         self.assertIn('.tickets/', self.p.read_root('.gitignore'))
 
     def test_update_merges_core_and_keeps_project_files(self):
-        self.p.tk('new', 'Mine')
-        self.p.tg('add', 'T1-mine.md'); self.p.tg('commit', '-q', '-m', 'ticket')
+        self.p.tk('new', 'Mine')   # auto_commit commits it
         open(os.path.join(SOURCE, 'NEW.md'), 'w').write('from core')
         self.addCleanup(os.remove, os.path.join(SOURCE, 'NEW.md'))
         self.p.sh('git', '-C', SOURCE, 'add', 'NEW.md')
@@ -250,6 +249,86 @@ class MultiUser(unittest.TestCase):
         self.assertEqual(self.p.tg('status', '--porcelain'), '')
         self.assertIn('T1', self.p.tg('log', '-1', '--format=%s'))
         self.assertEqual(self.p.sh('git', 'diff', '--cached', '--name-only'), '')   # the project's index is untouched
+
+
+class AutoCommit(unittest.TestCase):
+    """auto_commit (default true): one commit in .tickets/ after new, set, done and the hook. Best effort, never pushes."""
+    def setUp(self):
+        self.p = Project()
+        self.addCleanup(shutil.rmtree, self.p.dir)
+
+    def subjects(self):
+        return self.p.tg('log', '--format=%s', 'main').split('\n')[:-1]
+
+    def test_default_config_commits_once_per_command(self):
+        n = len(self.subjects())
+        self.p.tk('new', 'A'); self.p.tk('new', 'B')
+        self.p.tk('set', 'T1', 'doing')
+        self.p.tk('set', 'T1', 'doing')   # no change: no commit
+        self.p.tk('done', 'T2', '--commit', 'abc123')
+        self.assertEqual(self.subjects()[:4], ['Done: T2 (abc123)', 'T1: doing', 'New: T2', 'New: T1'])
+        self.assertEqual(len(self.subjects()), n + 4)
+        self.assertEqual(self.p.tg('status', '--porcelain'), '')
+
+    def test_hook_commit_is_one_commit(self):
+        self.p.tk('new', 'A')
+        n = len(self.subjects())
+        self.p.sh('git', 'commit', '-q', '--allow-empty', '-m', 'Work (T1)')
+        h = self.p.sh('git', 'log', '-1', '--format=%h').strip()
+        self.assertEqual(self.subjects()[0], 'Done: T1 (%s)' % h)
+        self.assertEqual(len(self.subjects()), n + 1)
+        self.assertEqual(self.p.sh('git', 'diff', '--cached', '--name-only'), '')
+
+    def test_unknown_id_makes_no_commit(self):
+        n = len(self.subjects())
+        self.p.tk('set', 'T9', 'ready'); self.p.tk('done', 'T9')
+        self.assertEqual(len(self.subjects()), n)
+
+    def test_off_makes_no_commit(self):
+        p = Project({'auto_commit': False})
+        self.addCleanup(shutil.rmtree, p.dir)
+        n = p.tg('rev-list', '--count', 'main')
+        p.tk('new', 'A'); p.tk('set', 'T1', 'ready'); p.tk('done', 'T1')
+        p.sh('git', 'commit', '-q', '--allow-empty', '-m', 'Work (T1)')
+        self.assertEqual(p.tg('rev-list', '--count', 'main'), n)
+        self.assertIn('done/', p.tg('status', '--porcelain'))   # still uncommitted
+
+    def run_tk(self, *a):
+        return subprocess.run([sys.executable, os.path.join(self.p.t, 'tickets.py'), *a], cwd=self.p.dir, capture_output=True, text=True)
+
+    def test_not_its_own_repo_warns_and_succeeds(self):
+        shutil.rmtree(os.path.join(self.p.t, '.git'))
+        r = self.run_tk('new', 'A')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.p.exists('T1-a.md'))
+        self.assertEqual(r.stderr.count('\n'), 1)
+        self.assertIn('not committed', r.stderr)
+        self.assertEqual(self.p.sh('git', 'rev-list', '--all', '--count').strip(), '0')   # nothing went into the project's repo
+
+    def test_rebase_in_progress_warns_and_succeeds(self):
+        os.mkdir(os.path.join(self.p.t, '.git', 'rebase-merge'))
+        r = self.run_tk('new', 'A')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.p.exists('T1-a.md'))
+        self.assertIn('not committed', r.stderr)
+        self.assertIn('rebase', r.stderr)
+        self.assertEqual(r.stderr.count('\n'), 1)
+
+    def test_git_failure_warns_and_succeeds(self):
+        pre = os.path.join(self.p.t, '.git', 'hooks', 'pre-commit')
+        open(pre, 'w').write('#!/bin/sh\nexit 1\n')
+        os.chmod(pre, 0o755)
+        r = self.run_tk('new', 'A')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('not committed', r.stderr)
+
+    def test_mode_must_be_chain_or_validate(self):
+        for mode, ok in (('chain', True), ('validate', True), ('fast', False)):
+            json.dump({'mode': mode}, open(os.path.join(self.p.t, 'config.json'), 'w'))
+            r = self.run_tk('board')
+            self.assertEqual(r.returncode == 0, ok, r.stderr)
+            if not ok:
+                self.assertIn('mode must be "chain" or "validate"', r.stderr)
 
 
 class Safety(unittest.TestCase):
