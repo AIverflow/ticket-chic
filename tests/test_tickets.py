@@ -201,9 +201,8 @@ class MultiUser(unittest.TestCase):
         self.p.tk('new', 'Desk')
         with mock.patch.dict(os.environ, {'TICKETS_PREFIX': 'L'}):
             self.p.tk('new', 'Laptop one'); self.p.tk('new', 'Laptop two')
-            with self.assertRaises(subprocess.CalledProcessError):
-                with mock.patch.dict(os.environ, {'TICKETS_PREFIX': 'X'}):
-                    self.p.tk('new', 'Bad')
+            with self.assertRaises(subprocess.CalledProcessError), mock.patch.dict(os.environ, {'TICKETS_PREFIX': 'X'}):
+                self.p.tk('new', 'Bad')
         self.assertEqual(self.p.files(), ['L1-laptop-one.md', 'L2-laptop-two.md', 'T1-desk.md'])
         self.p.sh('git', 'commit', '-q', '--allow-empty', '-m', 'Work (T1, L1 to L2)')
         self.assertEqual(self.p.files(), [])

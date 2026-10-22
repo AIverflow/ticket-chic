@@ -1,4 +1,7 @@
-import os, subprocess, tempfile, unittest
+import os
+import subprocess
+import tempfile
+import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

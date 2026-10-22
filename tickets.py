@@ -11,6 +11,8 @@ Each file starts with a frontmatter block (status, difficulty, size, blocked_by)
   tickets.py commit-hook                                     post-commit: finishes the tickets named in the subject
 Optional .tickets/config.json: {"title": "...", "id_prefix": "T", "statuses": [[key, label, colour], ...]}
   id_prefix may be a list (["T", "L"]): `new` uses the first, or $TICKETS_PREFIX. "auto_commit": true makes the hook commit .tickets/."""
+from __future__ import annotations
+
 import argparse
 import getpass
 import html
@@ -20,6 +22,9 @@ import re
 import subprocess
 import sys
 import time
+from typing import Any, Dict, List, Optional, Tuple
+
+Ticket = Dict[str, Any]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DONE_DIR = os.path.join(HERE, 'done')
@@ -35,9 +40,19 @@ DEFAULT_STATUSES = [
 DIFF_ICON = {'1': '🟢', '2': '🟡', '3': '🔴'}
 
 
-def load_config():
+def read(path: str) -> str:
+    with open(path, encoding='utf-8') as f:
+        return f.read()
+
+
+def write(path: str, text: str) -> None:
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(text)
+
+
+def load_config() -> Dict[str, Any]:
     p = os.path.join(HERE, 'config.json')
-    c = json.load(open(p, encoding='utf-8')) if os.path.exists(p) else {}
+    c = json.loads(read(p)) if os.path.exists(p) else {}
     c.setdefault('title', os.path.basename(os.path.dirname(HERE)) or 'Project')
     c.setdefault('id_prefix', 'T')
     c.setdefault('statuses', DEFAULT_STATUSES)
@@ -58,11 +73,11 @@ FM_RE = re.compile(r'\A---\n(.*?)\n---[ \t]*\n?(.*)\Z', re.S)
 
 # ---------- reading and writing ticket files
 
-def split_fm(text):
+def split_fm(text: str) -> Tuple[Dict[str, str], str]:
     m = FM_RE.match(text)
     if not m:
         return {}, text
-    meta = {}
+    meta: Dict[str, str] = {}
     for line in m.group(1).split('\n'):
         k, sep, v = line.partition(':')
         if sep and k.strip():
@@ -70,11 +85,11 @@ def split_fm(text):
     return meta, m.group(2)
 
 
-def read_ticket(path, in_done):
+def read_ticket(path: str, in_done: bool) -> Optional[Ticket]:
     m = FILE_RE.match(os.path.basename(path))
     if not m:
         return None
-    meta, body = split_fm(open(path, encoding='utf-8').read())
+    meta, body = split_fm(read(path))
     body = body.strip()
     title = meta.get('title') or next((line[2:].strip() for line in body.split('\n') if line.startswith('# ')), m.group(1))
     status = 'done' if in_done else meta.get('status', FIRST)
@@ -87,8 +102,9 @@ def read_ticket(path, in_done):
             'note': meta.get('commit', ''), 'by': meta.get('by', ''), 'body': body}
 
 
-def all_tickets():
-    out, seen = [], {}
+def all_tickets() -> List[Ticket]:
+    out: List[Ticket] = []
+    seen: Dict[str, str] = {}
     for d, in_done in ((HERE, False), (DONE_DIR, True)):
         if os.path.isdir(d):
             for f in sorted(os.listdir(d)):
@@ -100,13 +116,14 @@ def all_tickets():
     return out
 
 
-def num(t):
+def num(t: Ticket) -> Tuple[int, str]:
     m = re.search(r'(\d+)([a-z]?)$', t['id'])
+    assert m
     return (int(m.group(1)), m.group(2))
 
 
-def set_meta(path, updates):
-    text = open(path, encoding='utf-8').read()
+def set_meta(path: str, updates: Dict[str, str]) -> None:
+    text = read(path)
     m = FM_RE.match(text)
     lines, body = (m.group(1).split('\n'), m.group(2)) if m else ([], text)
     for k, v in updates.items():
@@ -116,10 +133,10 @@ def set_meta(path, updates):
                 break
         else:
             lines.append('%s: %s' % (k, v))
-    open(path, 'w', encoding='utf-8').write('---\n' + '\n'.join(lines) + '\n---\n' + body)
+    write(path, '---\n' + '\n'.join(lines) + '\n---\n' + body)
 
 
-def set_status(ids, status, commit=''):
+def set_status(ids: List[str], status: str, commit: str = '') -> List[str]:
     """Change the status of each ticket; done moves the file into done/, anything else moves it back. Returns the ids changed."""
     if status not in STATUS:
         sys.exit('unknown status %r (known: %s)' % (status, ', '.join(STATUS)))
@@ -148,12 +165,12 @@ def set_status(ids, status, commit=''):
     return changed
 
 
-def who():
+def who() -> str:
     r = subprocess.run(['git', '-C', os.path.dirname(HERE), 'config', 'user.name'], capture_output=True, text=True)
     return r.stdout.strip() or getpass.getuser()
 
 
-def new_ticket(title, difficulty, size, blocked_by):
+def new_ticket(title: str, difficulty: Optional[str], size: Optional[str], blocked_by: str) -> Tuple[str, str]:
     prefix = os.environ.get('TICKETS_PREFIX') or PREFIXES[0]
     if prefix not in PREFIXES:
         sys.exit('TICKETS_PREFIX %r is not in config.json id_prefix %s' % (prefix, PREFIXES))
@@ -171,15 +188,14 @@ def new_ticket(title, difficulty, size, blocked_by):
         fm.append('blocked_by: ' + blocked_by)
     fm.append('created: ' + time.strftime('%Y-%m-%d'))
     try:
-        f = open(path, 'x', encoding='utf-8')
+        with open(path, 'x', encoding='utf-8') as f:
+            f.write('---\n' + '\n'.join(fm) + '\n---\n\n## Do\n\n\n## Done when\n\n')
     except FileExistsError:
         sys.exit('%s already exists: not overwritten' % path)
-    with f:
-        f.write('---\n' + '\n'.join(fm) + '\n---\n\n## Do\n\n\n## Done when\n\n')
     return tid, path
 
 
-def effective(t, by_id):
+def effective(t: Ticket, by_id: Dict[str, Ticket]) -> Tuple[str, List[str]]:
     """(status key, ids still waited for). A ticket with unfinished blockers shows as blocked."""
     waiting = [b for b in t['blocked_by'] if b in by_id and by_id[b]['status'] != 'done']
     if waiting and t['status'] in ('open', 'ready') and 'blocked' in STATUS:
@@ -189,10 +205,11 @@ def effective(t, by_id):
 
 # ---------- board
 
-def board():
+def board() -> None:
     ts = all_tickets()
     by_id = {t['id']: t for t in ts}
-    rows, counts = [], {k: 0 for k in STATUS}
+    rows: List[str] = []
+    counts = dict.fromkeys(STATUS, 0)
     for t in sorted(ts, key=lambda t: (STATUS[effective(t, by_id)[0]][1], -num(t)[0] if t['status'] == 'done' else num(t)[0])):
         key, waiting = effective(t, by_id)
         counts[key] += 1
@@ -238,18 +255,19 @@ chips.forEach(c=>c.onclick=()=>{{on.has(c.dataset.k)?on.delete(c.dataset.k):on.a
 q.oninput=apply; apply();
 </script></html>'''
     out = os.path.join(HERE, 'board.html')
-    open(out, 'w', encoding='utf-8').write(page)
+    write(out, page)
     print('wrote', out, {STATUS[k][0]: v for k, v in counts.items() if v})
 
 
 # ---------- git hook
 
-def ids_in_subject(subject):
+def ids_in_subject(subject: str) -> List[str]:
     """IDs inside a trailing '(...)' of a commit subject: '(T64, T67 to T71)' -> T64, T67, ..., T71. '(see T95)' does not count."""
     m = re.search(r'\((%s\d+[a-z]?(?:\s*(?:,|and|to)\s*%s\d+[a-z]?)*)\)\s*$' % (PREFIX, PREFIX), subject)
     if not m:
         return []
-    inner, ids = m.group(1), []
+    inner = m.group(1)
+    ids: List[str] = []
     for pa, a, pb, b in re.findall(r'\b(%s)(\d+)\s+to\s+(%s)(\d+)\b' % (PREFIX, PREFIX), inner):
         if pa == pb:
             ids += ['%s%d' % (pa, n) for n in range(int(a), int(b) + 1)]
@@ -258,17 +276,17 @@ def ids_in_subject(subject):
     return list(dict.fromkeys(ids))
 
 
-def git(*a):
+def git(*a: str) -> str:
     return subprocess.run(['git', *a], capture_output=True, text=True, check=True).stdout.strip()
 
 
-def tgit(*a):
+def tgit(*a: str) -> "subprocess.CompletedProcess[str]":
     """git inside .tickets/. GIT_* variables are dropped: inside a hook they point at the project's repo."""
     env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
     return subprocess.run(['git', '-C', HERE, *a], capture_output=True, text=True, env=env)
 
 
-def commit_tickets(message):
+def commit_tickets(message: str) -> None:
     tgit('add', '-A')
     if tgit('diff', '--cached', '--quiet').returncode:
         r = tgit('commit', '-q', '-m', message)
@@ -276,7 +294,7 @@ def commit_tickets(message):
             sys.exit(r.stderr.strip() or 'git commit failed in ' + HERE)
 
 
-def sync():
+def sync() -> None:
     commit_tickets('Tickets: sync')
     up = tgit('rev-parse', '--abbrev-ref', '@{upstream}')
     if up.returncode:
@@ -290,7 +308,7 @@ def sync():
     print('synced with', up.stdout.strip())
 
 
-def commit_hook():
+def commit_hook() -> None:
     h, subject = git('log', '-1', '--format=%h%n%s').split('\n', 1)
     ids = ids_in_subject(subject)
     moved = set_status(ids, 'done', h) if ids else []
@@ -301,7 +319,7 @@ def commit_hook():
         print('tickets: done: ' + ', '.join(moved), file=sys.stderr)
 
 
-def main(argv):
+def main(argv: List[str]) -> None:
     ap = argparse.ArgumentParser(prog='tickets.py', description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='cmd')
     n = sub.add_parser('new'); n.add_argument('title')
@@ -328,7 +346,7 @@ def main(argv):
                 print('%-6s %-8s %s %-2s %s' % (t['id'], key, DIFF_ICON.get(t['difficulty'], ' '), t['size'], t['title']))
     elif a.cmd == 'show':
         t = {t['id']: t for t in all_tickets()}.get(a.id) or sys.exit('unknown ticket id: ' + a.id)
-        print(t['path']); print(open(t['path'], encoding='utf-8').read(), end='')
+        print(t['path']); print(read(t['path']), end='')
     elif a.cmd == 'set':
         print('changed:', set_status([a.id], a.status) or 'nothing (unknown id)'); board()
     elif a.cmd == 'done':

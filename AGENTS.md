@@ -7,4 +7,5 @@ Generic ticket system (see `README.md`). It is copied into other projects, so it
 - `WORKFLOW.md` is the core rules only. Branch, worktree, role and model rules go in `modules/`.
 - Never write to a project's `.tickets/` from here: each project has its own.
 - Test: `python3 -m unittest discover -s tests` (must pass before a commit).
+- Lint: `ruff check .` (config in `pyproject.toml`; ruff is a dev tool, not a dependency, and the code stays standard-library only).
 - Docs use plain words; the owner is called "Dave" in `WORKFLOW.md` and modules.

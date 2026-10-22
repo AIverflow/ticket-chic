@@ -1,0 +1,23 @@
+# Development tooling only: ruff lints the Python, nothing here is imported at runtime.
+# ticketing stays standard-library only; ruff is optional (uvx ruff / pipx ruff).
+[tool.ruff]
+target-version = "py38"
+line-length = 120
+
+[tool.ruff.lint]
+# Errors and pyflakes, import order, bugbear, type annotations, simplifications.
+# Everything else is off so the ruleset stays small and stable instead of
+# shifting with every ruff release.
+select = ["E4", "E7", "E9", "F", "I", "B", "ANN", "SIM", "C4"]
+ignore = [
+    "E702",  # semicolons are used on purpose for tight one-liners
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests are throwaway scripts: no annotations, and one-line file reads are fine.
+"tests/*" = ["ANN", "SIM115"]
+
+[tool.mypy]
+# Dev tool only (uvx mypy tickets.py). Checks the single runtime file.
+files = ["tickets.py"]
+strict = true
