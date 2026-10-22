@@ -11,11 +11,10 @@ Ticket files are not in worktrees (`.tickets/` is its own git repo, ignored by t
 - Work only in `<worktree_dir>/<ID>`.
 
 ## Shared git rules (all workers)
-- All worktrees share one repo. Never use `git stash`, `checkout`, `restore`, `reset` or `clean`: they reach other tickets' work. To look at old code: `git show <commit>:<path>`.
-- Never `git add -A`: add the files by name.
+- All worktrees share one repo. Workers (implementer, reviewer) never use `git stash`, `checkout`, `switch`, `restore`, `reset` or `clean`: they reach other tickets' work. To look at old code: `git show <commit>:<path>`.
+- Only the orchestrator (or, when `roles` is off, the agent doing the work) creates and merges branches and commits. It adds files by name, never `git add -A`.
 - Run heavy tests one at a time (`nice -n 10`). Parallel browsers or builds overload the machine.
 
 ## Cleanup
-- When the ticket is closed (or its branch merged): `git worktree remove <worktree_dir>/<ID>` (no `--force`; if git refuses, keep it and say so).
-- Remove worktrees older than 48 h only if sure they hold nothing uncommitted.
-- The branch stays until merged, then it is deleted (see `WORKFLOW.md`).
+The orchestrator (or the agent doing the work, when `roles` is off) does it, right after the ticket's branch is merged: `git worktree remove <worktree_dir>/<ID>` (no `--force`; if git refuses, keep it and say so). Then the branch is deleted (see `WORKFLOW.md`).
+A worktree left over from an earlier run: remove it only if `git -C <path> status` shows nothing uncommitted.

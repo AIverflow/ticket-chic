@@ -94,5 +94,5 @@ if [ -n "$first" ]; then
   echo "Written to $dst/config.json:"
   cat "$dst/config.json"; echo
   [ "$want_hook" = y ] || echo "Git hook: not installed."
-  echo "Change any setting in .tickets/config.json (see README, Agents)."
+  echo "Change any setting in .tickets/config.json (see README, Settings)."
 fi
