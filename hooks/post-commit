@@ -1,0 +1,14 @@
+#!/bin/sh
+# ticketing-hook
+# Finishes the tickets named at the end of the commit subject, e.g. "Strobe grid fix (T88)". Never blocks a commit.
+# Works from any worktree: the tickets live next to the main .git directory.
+# install.sh sets `sub` to the project folder inside the git repo ("" when the project is the repo root).
+sub=""
+# Replayed commits (rebase) and fixup!/squash!/amend! commits must not finish tickets again.
+for d in rebase-merge rebase-apply; do
+  [ -d "$(git rev-parse --git-path $d 2>/dev/null)" ] && exit 0
+done
+case $(git log -1 --format=%s 2>/dev/null) in fixup!*|squash!*|amend!*) exit 0 ;; esac
+root=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/..
+[ -f "$root/$sub.tickets/tickets.py" ] && python3 "$root/$sub.tickets/tickets.py" commit-hook || true
+exit 0
