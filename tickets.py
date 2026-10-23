@@ -201,7 +201,7 @@ def set_status(ids: List[str], status: str, commit: str = '') -> List[str]:
     with locked():
         by_id = {t['id']: t for t in all_tickets()}
         changed = []
-        for tid in ids:
+        for tid in dict.fromkeys(ids):   # once each: a second pass would use the old path
             t = by_id.get(tid)
             if not t:
                 print('unknown ticket id: ' + tid, file=sys.stderr)
@@ -243,8 +243,10 @@ def new_ticket(title: str, difficulty: Optional[str], size: Optional[str], block
         prefix = os.environ.get('TICKETS_PREFIX') or PREFIXES[0]
         if prefix not in PREFIXES:
             sys.exit('TICKETS_PREFIX %r is not in config.json id_prefix %s' % (prefix, PREFIXES))
-        own = re.compile(r'%s\d+[a-z]?' % re.escape(prefix))
-        nums = [num(t)[0] for t in all_tickets() if own.fullmatch(t['id'])]
+        own = re.compile(r'%s(\d+)[a-z]?' % re.escape(prefix))
+        # from file names, not read tickets: an unreadable ticket still holds its number
+        names = [f for d in (HERE, DONE_DIR) if os.path.isdir(d) and not os.path.islink(d) for f in os.listdir(d)]
+        nums = [int(m.group(1)) for f in names if (fm := FILE_RE.match(f)) and (m := own.fullmatch(fm.group(1)))]
         tid = '%s%d' % (prefix, max(nums, default=0) + 1)
         slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:50]
         path = os.path.join(HERE, '%s-%s.md' % (tid, slug) if slug else tid + '.md')
@@ -385,14 +387,19 @@ def commit_unlocked(message: str) -> None:
             sys.exit(r.stderr.strip() or 'git commit failed in ' + HERE)
 
 
+def check_own_repo() -> None:
+    """Without .tickets/.git, git would use the project's repo and commit its code."""
+    top = tgit('rev-parse', '--show-toplevel').stdout.strip()
+    if not top or os.path.realpath(top) != os.path.realpath(HERE):
+        sys.exit('%s is not its own git repo' % HERE)
+
+
 def auto_commit(message: str) -> None:
     """config auto_commit: commit .tickets/ after a change. Best effort: a problem is a warning, never a failure. Never pushes."""
     if not CFG['auto_commit']:
         return
     try:
-        top = tgit('rev-parse', '--show-toplevel').stdout.strip()
-        if not top or os.path.realpath(top) != os.path.realpath(HERE):
-            sys.exit('%s is not its own git repo' % HERE)
+        check_own_repo()
         commit_tickets(message)
     except SystemExit as e:
         reason = str(e.code) if isinstance(e.code, str) else 'git failed'
@@ -402,6 +409,7 @@ def auto_commit(message: str) -> None:
 
 
 def sync() -> None:
+    check_own_repo()
     with locked():   # the pull changes ticket files: no other writer meanwhile
         commit_unlocked('Tickets: sync')
         up = tgit('rev-parse', '--abbrev-ref', '@{upstream}')

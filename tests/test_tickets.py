@@ -305,6 +305,15 @@ class AutoCommit(unittest.TestCase):
         self.assertIn('not committed', r.stderr)
         self.assertEqual(self.p.sh('git', 'rev-list', '--all', '--count').strip(), '0')   # nothing went into the project's repo
 
+    def test_sync_refuses_when_not_its_own_repo(self):
+        self.p.sh('git', 'commit', '-q', '--allow-empty', '-m', 'init')
+        shutil.rmtree(os.path.join(self.p.t, '.git'))
+        open(os.path.join(self.p.dir, 'app.py'), 'w').write('app\n')
+        r = self.run_tk('sync')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('not its own git repo', r.stderr)
+        self.assertEqual(self.p.sh('git', 'rev-list', '--all', '--count').strip(), '1')   # nothing went into the project's repo
+
     def test_rebase_in_progress_warns_and_succeeds(self):
         os.mkdir(os.path.join(self.p.t, '.git', 'rebase-merge'))
         r = self.run_tk('new', 'A')
@@ -349,11 +358,8 @@ class Safety(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('tk_under_test', os.path.join(self.p.t, 'tickets.py'))
         tk = importlib.util.module_from_spec(spec); spec.loader.exec_module(tk)
         path = os.path.join(self.p.t, 'T1-one.md')
-        real = tk.all_tickets
-        tk.all_tickets = lambda: []                  # hide T1 so the next id collides with its file
-        with self.assertRaises(SystemExit):
+        with mock.patch.object(tk.os, 'listdir', lambda d: []), self.assertRaises(SystemExit):   # hide T1 so the next id collides with its file
             tk.new_ticket('One', '', '', '')
-        tk.all_tickets = real
         os.makedirs(tk.DONE_DIR, exist_ok=True)
         dest = os.path.join(tk.DONE_DIR, 'T1-one.md')
         open(dest, 'w').write('keep')
@@ -673,6 +679,20 @@ class Safety(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         self.assertIn('T9-x.md', r.stderr)
         self.assertIn('A', r.stdout)
+
+    def test_unreadable_ticket_keeps_its_number(self):
+        open(os.path.join(self.p.t, 'T1-a.md'), 'wb').write(b'---\n\xff\xfe\n---\n')
+        os.mkdir(os.path.join(self.p.t, 'done'))
+        open(os.path.join(self.p.t, 'done', 'T2-b.md'), 'wb').write(b'\xff')
+        self.p.tk('new', 'C')
+        self.assertTrue(self.p.exists('T3-c.md'))
+
+    def test_done_same_id_twice(self):
+        self.p.tk('new', 'A')
+        r = subprocess.run([sys.executable, os.path.join(self.p.t, 'tickets.py'), 'done', 'T1', 'T1'], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.p.exists('done', 'T1-a.md'))
+        self.assertIn('T1', self.p.tg('log', '-1', '--format=%s'))
 
     def test_new_strips_newlines_and_bad_blockers(self):
         self.p.tk('new', 'X\ndifficulty: 3\r\n---', '-b', 'T5\nsize: L, junk T6')
