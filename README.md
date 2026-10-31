@@ -2,7 +2,7 @@
 
 A minimal ticket system for your projects and the AI agents working on them. It needs only git and Python, no packages.
 
-- **Minimal.** One Python file (about 480 lines, standard library only).
+- **Minimal.** One Python file (about 490 lines, standard library only).
 - **Plain files.** One markdown file per ticket in `.tickets/`. Read, grep and diff them like code.
 - **A real board.** `board.html` is a static page with filters, search and the full text of each ticket. No server.
 - **Commits close tickets.** End a commit subject with `(T12)` and a git hook moves T12 to `done/`.

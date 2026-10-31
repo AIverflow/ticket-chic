@@ -246,7 +246,7 @@ def new_ticket(title: str, difficulty: Optional[str], size: Optional[str], block
         own = re.compile(r'%s(\d+)[a-z]?' % re.escape(prefix))
         # from file names, not read tickets: an unreadable ticket still holds its number
         names = [f for d in (HERE, DONE_DIR) if os.path.isdir(d) and not os.path.islink(d) for f in os.listdir(d)]
-        nums = [int(m.group(1)) for f in names if (fm := FILE_RE.match(f)) and (m := own.fullmatch(fm.group(1)))]
+        nums = [int(m.group(1)) for f in names if (hit := FILE_RE.match(f)) and (m := own.fullmatch(hit.group(1)))]
         tid = '%s%d' % (prefix, max(nums, default=0) + 1)
         slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:50]
         path = os.path.join(HERE, '%s-%s.md' % (tid, slug) if slug else tid + '.md')
@@ -467,9 +467,11 @@ def main(argv: List[str]) -> None:
                 print('%-6s %-8s %s %-2s %s' % (t['id'], key, DIFF_ICON.get(t['difficulty'], ' '), t['size'], t['title']))
     elif a.cmd == 'show':
         with locked():
-            t = {t['id']: t for t in all_tickets()}.get(a.id) or sys.exit('unknown ticket id: ' + a.id)
-            text = read(t['path'])
-        print(t['path']); print(text, end='')
+            one = {t['id']: t for t in all_tickets()}.get(a.id)
+            if not one:
+                sys.exit('unknown ticket id: ' + a.id)
+            text = read(one['path'])
+        print(one['path']); print(text, end='')
     elif a.cmd == 'set':
         changed = set_status([a.id], a.status)
         print('changed:', changed or 'nothing (unknown id)'); board()

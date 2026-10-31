@@ -39,7 +39,8 @@ c = {'title': sys.argv[2], 'id_prefix': 'T', 'auto_commit': True, 'roles': True,
 if sys.argv[4]:
     c['worktree_dir'] = sys.argv[4]
 c['mode'] = 'chain'
-json.dump(c, open(sys.argv[1] + '/config.json', 'w'), indent=2)
+with open(sys.argv[1] + '/config.json', 'w') as f:
+    json.dump(c, f, indent=2)
 PY
   git -C "$dst" add config.json
   git -C "$dst" commit -q -m "Project config"
