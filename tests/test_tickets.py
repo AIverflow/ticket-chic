@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import unittest
 from unittest import mock
 
@@ -112,7 +113,22 @@ class Tickets(unittest.TestCase):
         self.p.tk('new', 'A')
         with self.assertRaises(subprocess.CalledProcessError):
             self.p.tk('set', 'T1', 'nonsense')
-        self.assertIn('nothing', self.p.tk('done', 'T99'))
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.p.tk('done', 'T99')
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.p.tk('set', 'T99', 'ready')
+
+    def test_short_output_and_exit_1_on_unknown_id(self):
+        self.p.tk('new', 'A'); self.p.tk('new', 'B')
+        self.assertEqual(self.p.tk('set', 'T1', 'ready'), 'T1: ready\n')
+        self.assertRegex(self.p.tk('new', 'C'), r'\AT3 \S+T3-c\.md\n\Z')
+        self.assertTrue(self.p.tk('board').startswith('wrote '))
+        with self.assertRaises(subprocess.CalledProcessError) as e:
+            self.p.tk('done', 'T1', 'T99')
+        self.assertEqual(e.exception.stdout, 'done: T1\n')
+        self.assertIn('unknown ticket id: T99', e.exception.stderr)
+        self.assertTrue(self.p.exists('done', 'T1-a.md'))
+        self.assertEqual(self.p.tk('done', 'T2'), 'done: T2\n')
 
     def test_show_and_list_filter(self):
         self.p.tk('new', 'First')
@@ -165,7 +181,19 @@ class Tickets(unittest.TestCase):
         self.assertTrue(self.p.exists('done', 'T4-ticket-4.md'))
         with self.assertRaises(subprocess.CalledProcessError):
             self.p.tk('show', ' t99 ')
-        self.assertIn('nothing', self.p.tk('done', ' t99 '))
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.p.tk('done', ' t99 ')
+
+    def test_commit_in_any_case_closes_ticket_with_only_the_hook_line(self):
+        self.p.tk('new', 'A'); self.p.tk('new', 'B'); self.p.tk('new', 'C')
+        r = subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'Fix (t1 to t2)'],
+                           cwd=self.p.dir, capture_output=True, text=True, check=True)
+        self.assertEqual(r.stderr, 'tickets: done: T1, T2\n')
+        self.assertEqual(self.p.files(), ['T3-c.md'])
+
+    def test_blocked_by_in_any_case(self):
+        self.p.tk('new', 'A'); self.p.tk('new', 'B', '-b', 't1')
+        self.assertIn('blocked_by: T1', self.p.read('T2-b.md'))
 
     def test_commit_hook_warns_on_unknown_id(self):
         self.p.tk('new', 'A')
@@ -216,6 +244,30 @@ class Tickets(unittest.TestCase):
         self.assertIn('Fix &lt;b&gt;markup&lt;/b&gt;', board)
         self.assertIn('🔴', board)
 
+    def test_list_shows_note_and_aligns_titles(self):
+        self.p.tk('new', 'First'); self.p.tk('new', 'Second', '-b', 'T1', '-d', '2'); self.p.tk('new', 'Third')
+        self.p.tk('set', 'T3', 'doing')
+        out = self.p.tk('list')
+        self.assertIn('Second  (waits for T1)', out)
+        self.assertIn('Third  (by t)', out)
+        self.assertNotIn('First  (', out)
+        def column(line, title):   # terminal cells before the title: an emoji takes 2
+            return sum(2 if unicodedata.east_asian_width(c) == 'W' else 1 for c in line[:line.index(title)])
+        lines = {line.split()[0]: line for line in out.splitlines()}
+        self.assertEqual(column(lines['T1'], 'First'), column(lines['T2'], 'Second'))
+
+    def test_board_title_opens_details(self):
+        def write(name, text):
+            open(os.path.join(self.p.t, name), 'w', encoding='utf-8').write(text)
+        write('T1-plain.md', '---\ntitle: Plain\nstatus: open\n---\n')
+        write('T2-body.md', '---\ntitle: Has <script>x</script> body\nstatus: open\n---\nBody <i>text</i>\n')
+        self.p.tk('board')
+        board = self.p.read('board.html')
+        self.assertIn('<summary>Has &lt;script&gt;x&lt;/script&gt; body</summary><pre>Body &lt;i&gt;text&lt;/i&gt;</pre>', board)
+        self.assertIn('<td class="ti">Plain</td>', board)
+        self.assertEqual(board.count('<details>'), 1)
+        self.assertNotIn('<script>x', board)
+
     def test_commit_hook_finishes_ticket_in_subject(self):
         self.p.tk('new', 'A'); self.p.tk('new', 'B'); self.p.tk('new', 'C')
         open(os.path.join(self.p.dir, 'f'), 'w').write('x')
@@ -234,6 +286,8 @@ class Tickets(unittest.TestCase):
         self.assertEqual(sorted(m.ids_in_subject('X (T64, T67 to T70)')), ['T64', 'T67', 'T68', 'T69', 'T70'])
         self.assertEqual(m.ids_in_subject('X (see T95)'), [])
         self.assertEqual(m.ids_in_subject('X T5'), [])
+        self.assertEqual(m.ids_in_subject('Fix (t1)'), ['T1'])
+        self.assertEqual(m.ids_in_subject('Fix (t1 to t3)'), ['T1', 'T2', 'T3'])
 
 
 class CustomConfig(unittest.TestCase):
@@ -295,6 +349,68 @@ class MultiUser(unittest.TestCase):
         self.assertIn('L1-from-laptop.md', self.p.files())
         self.assertIn('T1-from-desk.md', self.p.sh('git', '-C', remote, 'ls-tree', '--name-only', 'main'))
 
+    def clones(self):
+        """self.p and a second clone of its ticket repo, both on the same remote."""
+        remote = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, remote)
+        other = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, other)
+        self.p.sh('git', 'init', '-q', '--bare', remote)
+        self.p.tg('remote', 'add', 'share', remote)
+        self.p.tg('push', '-q', '-u', 'share', 'main')
+        self.p.sh('git', 'clone', '-q', '-b', 'main', remote, other)
+        for k, v in (('user.email', 't@t'), ('user.name', 't')):
+            self.p.sh('git', '-C', other, 'config', k, v)
+        return remote, other
+
+    def run_in(self, folder, *a):
+        return subprocess.run([sys.executable, os.path.join(folder, 'tickets.py'), *a], cwd=folder, capture_output=True, text=True)
+
+    def test_duplicate_id_warns_and_sync_stops_before_push(self):
+        remote, other = self.clones()
+        self.p.tk('new', 'Alpha'); self.p.tk('new', 'Gamma')
+        self.assertEqual(self.run_in(other, 'new', 'Beta').returncode, 0)   # same T1 on both machines
+        self.p.tk('sync')
+        r = self.run_in(other, 'sync')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('duplicate ticket id T1', r.stderr)
+        self.assertIn('Rename one to T3', r.stderr)
+        self.assertNotIn('beta', self.p.sh('git', '-C', remote, 'ls-tree', '--name-only', 'main'))
+        r = self.run_in(other, 'list')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('duplicate ticket id T1', r.stderr)
+        self.assertEqual(self.run_in(other, 'set', 'T2', 'ready').returncode, 0)
+
+    def test_sync_conflict_is_aborted_and_named(self):
+        remote, other = self.clones()
+        self.p.tk('new', 'A'); self.p.tk('sync')
+        self.assertEqual(self.run_in(other, 'sync').returncode, 0)
+        self.p.tk('set', 'T1', 'ready')
+        self.assertEqual(self.run_in(other, 'done', 'T1').returncode, 0)
+        self.assertEqual(self.run_in(other, 'sync').returncode, 0)
+        r = self.run_in(self.p.t, 'sync')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('T1-a.md', r.stderr)
+        self.assertIn('changed on both sides', r.stderr)
+        for g in ('rebase-merge', 'rebase-apply'):
+            self.assertFalse(os.path.exists(os.path.join(self.p.t, '.git', g)), g)
+        self.assertIn('status: ready', self.p.tg('show', 'HEAD:T1-a.md'))   # A's change is still in A's commit
+
+    def test_no_ticket_writes_during_a_rebase(self):
+        self.p.tk('new', 'A')
+        os.mkdir(os.path.join(self.p.t, '.git', 'rebase-merge'))
+        before = self.p.read('T1-a.md')
+        for a in (('set', 'T1', 'ready'), ('new', 'B'), ('sync',)):
+            r = self.run_in(self.p.t, *a)
+            self.assertNotEqual(r.returncode, 0, a)
+            self.assertIn('rebase or merge is in progress', r.stderr)
+        self.assertEqual(self.p.files(), ['T1-a.md'])
+        self.assertEqual(self.p.read('T1-a.md'), before)
+
+    def test_hook_during_a_rebase_closes_nothing(self):
+        self.p.tk('new', 'A')
+        os.mkdir(os.path.join(self.p.t, '.git', 'rebase-merge'))
+        self.p.sh('git', 'commit', '-q', '--allow-empty', '-m', 'Work (T1)')   # the hook must not fail the commit
+        self.assertEqual(self.p.files(), ['T1-a.md'])
+
     def test_hook_auto_commit(self):
         self.config(auto_commit=True)
         self.p.tg('commit', '-q', '-am', 'config')
@@ -337,7 +453,9 @@ class AutoCommit(unittest.TestCase):
 
     def test_unknown_id_makes_no_commit(self):
         n = len(self.subjects())
-        self.p.tk('set', 'T9', 'ready'); self.p.tk('done', 'T9')
+        for cmd in (('set', 'T9', 'ready'), ('done', 'T9')):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.p.tk(*cmd)
         self.assertEqual(len(self.subjects()), n)
 
     def test_off_makes_no_commit(self):
@@ -370,14 +488,12 @@ class AutoCommit(unittest.TestCase):
         self.assertIn('not its own git repo', r.stderr)
         self.assertEqual(self.p.sh('git', 'rev-list', '--all', '--count').strip(), '1')   # nothing went into the project's repo
 
-    def test_rebase_in_progress_warns_and_succeeds(self):
+    def test_rebase_in_progress_refuses_new(self):
         os.mkdir(os.path.join(self.p.t, '.git', 'rebase-merge'))
         r = self.run_tk('new', 'A')
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertTrue(self.p.exists('T1-a.md'))
-        self.assertIn('not committed', r.stderr)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(self.p.exists('T1-a.md'))
         self.assertIn('rebase', r.stderr)
-        self.assertEqual(r.stderr.count('\n'), 1)
 
     def test_git_failure_warns_and_succeeds(self):
         pre = os.path.join(self.p.t, '.git', 'hooks', 'pre-commit')
@@ -401,12 +517,14 @@ class Safety(unittest.TestCase):
         self.p = Project()
         self.addCleanup(shutil.rmtree, self.p.dir)
 
-    def test_duplicate_id_fails(self):
+    def test_duplicate_id_warns_and_is_skipped(self):
         self.p.tk('new', 'One')
         open(os.path.join(self.p.t, 'T1-other.md'), 'w').write('---\nstatus: open\n---\n')
-        with self.assertRaises(subprocess.CalledProcessError) as c:
-            self.p.sh(sys.executable, os.path.join(self.p.t, 'tickets.py'), 'list')
-        self.assertIn('duplicate ticket id T1', c.exception.stderr)
+        r = subprocess.run([sys.executable, os.path.join(self.p.t, 'tickets.py'), 'list'], cwd=self.p.dir, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('duplicate ticket id T1', r.stderr)
+        self.assertIn('Rename one to T2', r.stderr)
+        self.assertEqual(r.stdout.count('T1'), 1)
 
     def test_no_overwrite(self):
         import importlib.util
@@ -448,7 +566,8 @@ class Safety(unittest.TestCase):
         os.symlink(outside, os.path.join(self.p.t, 'T1-link.md'))
         with self.assertRaises(subprocess.CalledProcessError):
             self.p.tk('show', 'T1')
-        self.assertIn('nothing', self.p.tk('set', 'T1', 'doing'))
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.p.tk('set', 'T1', 'doing')
         self.assertNotIn('secret', self.p.read('board.html'))
         self.assertNotIn('doing', open(outside).read())
         os.makedirs(os.path.join(self.p.dir, 'elsewhere'))
@@ -540,7 +659,7 @@ class Safety(unittest.TestCase):
         self.assertEqual(self.p.read('T1-a.md').count('status:'), 1)
         self.assertRegex(self.p.tk('list'), r'T1\s+ready')
 
-    def test_sync_refuses_while_rebase_conflict(self):
+    def test_sync_conflict_leaves_no_rebase(self):
         remote = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, remote)
         other = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, other)
         self.p.sh('git', 'init', '-q', '--bare', remote)
@@ -557,11 +676,10 @@ class Safety(unittest.TestCase):
         for a in (['commit', '-q', '-am', 'laptop'], ['push', '-q']):
             self.p.sh('git', '-C', other, '-c', 'user.email=t@t', '-c', 'user.name=t', *a)
         self.p.tk('set', 'T1', 'parked')
-        with self.assertRaises(subprocess.CalledProcessError):
-            self.p.tk('sync')                                    # conflict: stops mid-rebase
         with self.assertRaises(subprocess.CalledProcessError) as c:
-            self.p.tk('sync')
-        self.assertIn('finish or abort', c.exception.stderr)
+            self.p.tk('sync')                                    # conflict: the rebase is aborted
+        self.assertIn('changed on both sides', c.exception.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.p.t, '.git', 'rebase-merge')))
         self.assertNotIn('<<<<<<<', self.p.tg('log', '--all', '-p', '--', 'T1-a.md'))
 
     def test_parallel_new_gives_distinct_ids(self):

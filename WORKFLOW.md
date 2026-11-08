@@ -20,7 +20,7 @@ Before each ticket, read the switches in `.tickets/config.json`. A missing key m
 Everything lives in `.tickets/` (the default name; install lets Dave pick another, and then it is that name everywhere here):
 - `T<n>-<slug>.md`: one file per open ticket.
 - `done/T<n>-<slug>.md`: finished tickets (same file, moved).
-- `board.html`: the table Dave reads (status filters, search, details). Built by `tickets.py`, never edited.
+- `board.html`: the table Dave reads (status filters and search, kept on reload; click a title for details). Built by `tickets.py`, never edited.
 - `notes/` (optional): saved info on dropped branches (see Where the work happens).
 - `config.json` (optional): board title, ID prefix, statuses, the switches in Settings.
 - `WORKFLOW.md`, `tickets.py`, `hooks/`, `modules/` and the other files from git branch `core`: the system. Don't edit them in a project: change them in the `ticket-chic` repo, then update.
@@ -77,14 +77,14 @@ Optional, independent. Judge each on its own question.
 | Command | Does |
 |---|---|
 | `new "Title" [-d 1\|2\|3] [-s S\|M\|L] [-b T1,T2]` | creates the next ticket from a template |
-| `list [<status>] [--all]` | prints unfinished tickets (done ones too with `--all`, one status with e.g. `list ready`) |
+| `list [<status>] [--all]` | prints unfinished tickets with their note, e.g. `(waits for T3)` or `(by name)` (done ones too with `--all`, one status with e.g. `list ready`) |
 | `show T12` | prints one ticket file |
 | `set T12 <status>` | changes status; `done` moves the file to `done/`, anything else moves it back |
 | `done T12 [T13 …] [--commit <hash>]` | same as `set … done`, records the commit |
 | `board` | rewrites `board.html` |
 | `sync` | commits `.tickets/`, then pulls and pushes if `main` in `.tickets/` has a remote (see README, optional) |
 
-`show`, `set` and `done` accept an ID in any case with extra spaces (`t12`, `T12A` is `T12a`).
+IDs are read in any case everywhere (commands, `-b`, commit subjects), with extra spaces in commands (`t12`, `T12A` is `T12a`).
 
 **The hook finishes tickets.** A commit whose subject ends with ticket ID(s) in parentheses, e.g. `Login: retry after timeout (T88)` or `(T64, T67 to T71)`, moves them to `done/` with the commit hash and rebuilds the board. It works in every worktree too, even before the merge.
 So: **an ID in parentheses at the end of the subject means finished. Never use it for partial work** (write `T88 part 1` without parentheses).

@@ -93,6 +93,7 @@ Statuses are configurable too: see [`WORKFLOW.md`](WORKFLOW.md), Status.
 ## Several machines or people (optional, lightly tested)
 For a few people who sync often; not a team tracker. Off until you use it.
 - Share `.tickets/` through its own remote, not `origin` (that is where ticket-chic came from): `git -C .tickets push -u <remote> main` once, then `python3 .tickets/tickets.py sync` commits, pulls and pushes.
+- If two machines edit the same ticket, `sync` aborts the rebase, pushes nothing and names the files: fix by hand as it says. Two tickets with one ID: commands warn and skip the second; `sync` stops before pushing until you rename one. No ticket changes while a rebase or merge is in progress in `.tickets/`.
 - A second machine: `git clone <remote> /path/to/project/.tickets`, then `./install.sh /path/to/project`.
 - One prefix per machine so numbers never clash: `"id_prefix": ["T", "L"]` in `config.json`, and `export TICKETS_PREFIX=L` on the second one.
 - Anyone who can push can change `tickets.py`, which the hook runs: share only with people you trust.

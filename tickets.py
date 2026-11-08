@@ -2,11 +2,11 @@
 """Ticket tool. One markdown file per ticket in the ticket folder (.tickets/ by default; open) or its done/ (finished).
 Each file starts with a frontmatter block (status, difficulty, size, blocked_by).
   tickets.py new "Title" [-d 1|2|3] [-s S|M|L] [-b T1,T2]   create the next ticket
-  tickets.py list [<status>] [--all]                         print the tickets (only that status if given); warns on blocked_by cycles
-  tickets.py show T12                                        print one ticket file (show, set, done take any case: t12)
+  tickets.py list [<status>] [--all]                         print the tickets with their note (only that status if given); warns on blocked_by cycles
+  tickets.py show T12                                        print one ticket file (IDs are read in any case: t12)
   tickets.py set T12 <status>                                change status (done moves the file to done/)
   tickets.py done T12 [T13 ...] [--commit <hash>]            same as set <id> done
-  tickets.py board                                           write board.html (filters, search, details)
+  tickets.py board                                           write board.html (filters, search, title opens details)
   tickets.py sync                                            commit .tickets/, then pull and push if it has a remote
   tickets.py commit-hook                                     post-commit: finishes the tickets named in the subject
 Optional .tickets/config.json: {"title": "...", "id_prefix": "T" (letters), "statuses": [[key, label, colour], ...]}
@@ -117,7 +117,7 @@ PREFIX = '(?:%s)' % '|'.join(map(re.escape, PREFIXES))
 # key -> (label, order, colour); a colour that is not #hex falls back to grey (it goes into a style attribute)
 STATUS = {s[0]: (s[1], i, s[2] if re.fullmatch(r'#[0-9a-fA-F]{3,8}', str(s[2])) else '#8b949e') for i, s in enumerate(CFG['statuses'])}
 FIRST = 'open' if 'open' in STATUS else next((k for k in STATUS if k not in ('blocked', 'done')), 'done')   # status of a new ticket
-ID_RE = re.compile(r'\b%s\d+[a-z]?\b' % PREFIX)
+ID_RE = re.compile(r'\b%s\d+[a-z]?\b' % PREFIX, re.I)
 FILE_RE = re.compile(r'^(%s\d+[a-z]?)(?:-.*)?\.md$' % PREFIX)
 FM_RE = re.compile(r'\A---\n(.*?)\n---[ \t]*\n?(.*)\Z', re.S)
 
@@ -163,11 +163,20 @@ def read_ticket(path: str, in_done: bool) -> Optional[Ticket]:
     return {'id': m.group(1), 'path': path, 'title': title, 'status': status,
             'difficulty': meta.get('difficulty') if meta.get('difficulty') in DIFF_ICON else '',
             'size': meta.get('size', '').upper() if meta.get('size', '').upper() in ('S', 'M', 'L') else '',
-            'blocked_by': ID_RE.findall(meta.get('blocked_by', '')),
+            'blocked_by': [norm_id(i) for i in ID_RE.findall(meta.get('blocked_by', ''))],
             'note': meta.get('commit', ''), 'by': meta.get('by', ''), 'body': body}
 
 
-def all_tickets() -> List[Ticket]:
+def next_id(prefix: str) -> str:
+    own = re.compile(r'%s(\d+)[a-z]?' % re.escape(prefix))
+    # from file names, not read tickets: an unreadable ticket still holds its number
+    names = [f for d in (HERE, DONE_DIR) if os.path.isdir(d) and not os.path.islink(d) for f in os.listdir(d)]
+    nums = [int(m.group(1)) for f in names if (hit := FILE_RE.match(f)) and (m := own.fullmatch(hit.group(1)))]
+    return '%s%d' % (prefix, max(nums, default=0) + 1)
+
+
+def all_tickets(strict: bool = False) -> List[Ticket]:
+    """strict: a duplicate id stops sync before it pushes; otherwise it is a warning and the second file is skipped."""
     out: List[Ticket] = []
     seen: Dict[str, str] = {}
     for d, in_done in ((HERE, False), (DONE_DIR, True)):
@@ -175,7 +184,12 @@ def all_tickets() -> List[Ticket]:
             for f in sorted(os.listdir(d)):
                 if t := read_ticket(os.path.join(d, f), in_done):
                     if t['id'] in seen:
-                        sys.exit('duplicate ticket id %s: %s and %s' % (t['id'], seen[t['id']], t['path']))
+                        dup = 'duplicate ticket id %s: %s and %s' % (t['id'], seen[t['id']], t['path'])
+                        new = next_id(re.sub(r'\d.*', '', t['id']))
+                        if strict:
+                            sys.exit('sync stopped before push: %s. Rename one to %s (file name, and blocked_by that point at it), then sync again.' % (dup, new))
+                        print('tickets: %s (second one skipped). Rename one to %s.' % (dup, new), file=sys.stderr)
+                        continue
                     seen[t['id']] = t['path']
                     out.append(t)
     return out
@@ -210,6 +224,8 @@ def set_status(ids: List[str], status: str, commit: str = '') -> List[str]:
     if status == 'done' and os.path.exists(DONE_DIR) and not os.path.isdir(DONE_DIR):
         sys.exit('%s is not a folder: nothing changed' % DONE_DIR)
     with locked():
+        if why := busy():
+            sys.exit(why)
         by_id = {t['id']: t for t in all_tickets()}
         changed = []
         for tid in dict.fromkeys(ids):   # once each: a second pass would use the old path
@@ -247,18 +263,16 @@ def who() -> str:
 
 
 def new_ticket(title: str, difficulty: Optional[str], size: Optional[str], blocked_by: str) -> Tuple[str, str]:
-    ids = ID_RE.findall(blocked_by)
+    ids = [norm_id(i) for i in ID_RE.findall(blocked_by)]
     if blocked_by.strip() and not ids:
         sys.exit('-b: no valid ticket id in %r' % blocked_by)
     with locked():
+        if why := busy():
+            sys.exit(why)
         prefix = os.environ.get('TICKETS_PREFIX') or PREFIXES[0]
         if prefix not in PREFIXES:
             sys.exit('TICKETS_PREFIX %r is not in config.json id_prefix %s' % (prefix, PREFIXES))
-        own = re.compile(r'%s(\d+)[a-z]?' % re.escape(prefix))
-        # from file names, not read tickets: an unreadable ticket still holds its number
-        names = [f for d in (HERE, DONE_DIR) if os.path.isdir(d) and not os.path.islink(d) for f in os.listdir(d)]
-        nums = [int(m.group(1)) for f in names if (hit := FILE_RE.match(f)) and (m := own.fullmatch(hit.group(1)))]
-        tid = '%s%d' % (prefix, max(nums, default=0) + 1)
+        tid = next_id(prefix)
         slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:50]
         path = os.path.join(HERE, '%s-%s.md' % (tid, slug) if slug else tid + '.md')
         fm = ['title: ' + re.sub(r'[\r\n]+', ' ', title), 'status: ' + FIRST]
@@ -305,29 +319,37 @@ def cycles(by_id: Dict[str, Ticket]) -> List[List[str]]:
 
 # ---------- board
 
-def board() -> None:
+def note(t: Ticket, by_id: Dict[str, Ticket], loops: Dict[str, List[str]]) -> str:
+    """The Note text shared by board and list: the cycle, what it waits for, who works on it, or its commit."""
+    key, waiting = effective(t, by_id)
+    wait = ('cycle: ' + ' -> '.join(loops[t['id']])) if t['id'] in loops else ('waits for ' + ', '.join(waiting)) if waiting else ', '.join(t['blocked_by'])
+    return wait or ('by ' + t['by'] if key == 'doing' and t['by'] else t['note'])
+
+
+def board() -> Dict[str, int]:
     with locked():   # read and write under the lock: an older board never overwrites a newer one
-        write_board()
+        return write_board()
 
 
-def write_board() -> None:
+def write_board() -> Dict[str, int]:
     ts = all_tickets()
     by_id = {t['id']: t for t in ts}
     loops = {i: c for c in cycles(by_id) for i in c}
     rows: List[str] = []
     counts = dict.fromkeys(STATUS, 0)
     for t in sorted(ts, key=lambda t: (STATUS[effective(t, by_id)[0]][1], -num(t)[0] if t['status'] == 'done' else num(t)[0])):
-        key, waiting = effective(t, by_id)
+        key = effective(t, by_id)[0]
         counts[key] += 1
         label, _, col = STATUS[key]
-        wait = ('cycle: ' + ' -> '.join(loops[t['id']])) if t['id'] in loops else ('waits for ' + ', '.join(waiting)) if waiting else ', '.join(t['blocked_by'])
+        title_cell = html.escape(t['title'])
+        if t['body']:
+            title_cell = f'<details><summary>{title_cell}</summary><pre>{html.escape(t["body"])}</pre></details>'
         rows.append(
             f'<tr class="r" data-k="{html.escape(key)}" data-q="{html.escape((t["id"] + " " + t["title"]).lower())}">'
             f'<td class="id">{html.escape(t["id"])}</td><td>{DIFF_ICON.get(t["difficulty"], "")}</td><td>{html.escape(t["size"])}</td>'
-            f'<td class="ti">{html.escape(t["title"])}'
-            f'<details><summary>details</summary><pre>{html.escape(t["body"])}</pre></details></td>'
+            f'<td class="ti">{title_cell}</td>'
             f'<td><span class="b" style="--c:{html.escape(col)}">{html.escape(label)}</span></td>'
-            f'<td class="sm">{html.escape(wait or ("by " + t["by"] if key == "doing" and t["by"] else t["note"]))}</td></tr>')
+            f'<td class="sm">{html.escape(note(t, by_id, loops))}</td></tr>')
     chips =''.join(f'<button class="chip" data-k="{html.escape(k)}" style="--c:{html.escape(v[2])}">{html.escape(v[0])} <b>{counts[k]}</b></button>'
                     for k, v in STATUS.items())
     title = html.escape(CFG['title'])
@@ -344,7 +366,7 @@ table{{border-collapse:collapse;width:100%}} th{{text-align:left;color:#8b949e;f
 td{{border-bottom:1px solid #21262d;padding:7px 8px;vertical-align:top}}
 .id{{font-weight:700;white-space:nowrap}} .ti{{max-width:640px}} .sm{{color:#8b949e;font-size:12.5px}}
 .b{{display:inline-block;border:1px solid var(--c);color:var(--c);border-radius:5px;padding:1px 8px;white-space:nowrap;font-size:12.5px}}
-details{{margin-top:4px}} summary{{cursor:pointer;color:#58a6ff;font-size:12.5px}}
+summary{{cursor:pointer}}
 pre{{white-space:pre-wrap;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:10px;margin:6px 0 0;font:12.5px/1.45 ui-monospace,monospace}}
 .hide{{display:none}}
 </style>
@@ -353,9 +375,12 @@ pre{{white-space:pre-wrap;background:#161b22;border:1px solid #30363d;border-rad
 <div class="bar">{chips}<input id="q" placeholder="search id or title"></div>
 <table><thead><tr><th>ID</th><th>Diff</th><th>Size</th><th>Title</th><th>Status</th><th>Note</th></tr></thead><tbody>{''.join(rows)}</tbody></table>
 <script>
-const on=new Set({shown}); // done hidden by default
+const h=new URLSearchParams(location.hash.slice(1)); // #k=doing,ready&q=text survives a reload
+const on=new Set(h.has('k')?h.get('k').split(',').filter(Boolean):{shown}); // done hidden by default
 const rows=[...document.querySelectorAll('tr.r')], chips=[...document.querySelectorAll('.chip')], q=document.getElementById('q');
+q.value=h.get('q')||'';
 function apply(){{const s=q.value.toLowerCase();
+ history.replaceState(null,'','#'+new URLSearchParams({{k:[...on].join(','),q:q.value}}));
  chips.forEach(c=>c.classList.toggle('on',on.has(c.dataset.k)));
  rows.forEach(r=>r.classList.toggle('hide',!on.has(r.dataset.k)||(s&&!r.dataset.q.includes(s))));}}
 chips.forEach(c=>c.onclick=()=>{{on.has(c.dataset.k)?on.delete(c.dataset.k):on.add(c.dataset.k);apply();}});
@@ -363,25 +388,25 @@ q.oninput=apply; apply();
 </script></html>'''
     out = os.path.join(HERE, 'board.html')
     write(out, page)
-    print('wrote', out, {STATUS[k][0]: v for k, v in counts.items() if v})
+    return {STATUS[k][0]: v for k, v in counts.items() if v}
 
 
 # ---------- git hook
 
 def ids_in_subject(subject: str) -> List[str]:
     """IDs inside a trailing '(...)' of a commit subject: '(T64, T67 to T71)' -> T64, T67, ..., T71. '(see T95)' does not count."""
-    m = re.search(r'\((%s\d+[a-z]?(?:\s*(?:,|and|to)\s*%s\d+[a-z]?)*)\)\s*$' % (PREFIX, PREFIX), subject)
+    m = re.search(r'\((%s\d+[a-z]?(?:\s*(?:,|and|to)\s*%s\d+[a-z]?)*)\)\s*$' % (PREFIX, PREFIX), subject, re.I)
     if not m:
         return []
     inner = m.group(1)
     ids: List[str] = []
-    for pa, a, pb, b in re.findall(r'\b(%s)(\d+)\s+to\s+(%s)(\d+)\b' % (PREFIX, PREFIX), inner):
-        if pa != pb or not int(a) <= int(b) <= int(a) + 1000:
+    for pa, a, pb, b in re.findall(r'\b(%s)(\d+)\s+to\s+(%s)(\d+)\b' % (PREFIX, PREFIX), inner, re.I):
+        if pa.upper() != pb.upper() or not int(a) <= int(b) <= int(a) + 1000:
             print('tickets: range %s%s to %s%s skipped (reversed, mixed prefixes or over 1000 ids)' % (pa, a, pb, b), file=sys.stderr)
             continue
-        ids += ['%s%d' % (pa, n) for n in range(int(a), int(b) + 1)]
-    inner = re.sub(r'\b%s\d+\s+to\s+%s\d+\b' % (PREFIX, PREFIX), '', inner)
-    ids += ID_RE.findall(inner)
+        ids += [norm_id('%s%d' % (pa, n)) for n in range(int(a), int(b) + 1)]
+    inner = re.sub(r'\b%s\d+\s+to\s+%s\d+\b' % (PREFIX, PREFIX), '', inner, flags=re.I)
+    ids += [norm_id(i) for i in ID_RE.findall(inner)]
     return list(dict.fromkeys(ids))
 
 
@@ -400,14 +425,28 @@ def commit_tickets(message: str) -> None:
         commit_unlocked(message)
 
 
-def commit_unlocked(message: str) -> None:
-    """Caller holds locked()."""
+def own_repo() -> bool:
+    top = tgit('rev-parse', '--show-toplevel').stdout.strip()
+    return bool(top) and os.path.realpath(top) == os.path.realpath(HERE)
+
+
+def busy() -> str:
+    """Why .tickets/ must not change now ('' when free): its own repo is in the middle of a rebase or merge."""
+    if not own_repo():   # no repo, or the project's: not ours to judge
+        return ''
     for g in ('rebase-merge', 'rebase-apply', 'MERGE_HEAD'):
         p = tgit('rev-parse', '--git-path', g).stdout.strip()
         if p and os.path.exists(os.path.join(HERE, p)):
-            sys.exit('a rebase or merge is in progress: finish or abort it in %s first' % HERE)
+            return 'a rebase or merge is in progress: finish or abort it in %s first' % HERE
     if tgit('diff', '--name-only', '--diff-filter=U').stdout.strip():
-        sys.exit('unmerged files: finish or abort the rebase/merge in %s first' % HERE)
+        return 'unmerged files: finish or abort the rebase/merge in %s first' % HERE
+    return ''
+
+
+def commit_unlocked(message: str) -> None:
+    """Caller holds locked()."""
+    if why := busy():
+        sys.exit(why)
     r = tgit('add', '-A')
     if r.returncode:
         sys.exit(r.stderr.strip() or 'git add failed in ' + HERE)
@@ -419,8 +458,7 @@ def commit_unlocked(message: str) -> None:
 
 def check_own_repo() -> None:
     """Without .tickets/.git, git would use the project's repo and commit its code."""
-    top = tgit('rev-parse', '--show-toplevel').stdout.strip()
-    if not top or os.path.realpath(top) != os.path.realpath(HERE):
+    if not own_repo():
         sys.exit('%s is not its own git repo' % HERE)
 
 
@@ -448,19 +486,28 @@ def sync() -> None:
             return
         r = tgit('pull', '-q', '--rebase')
         if r.returncode:
+            files = tgit('diff', '--name-only', '--diff-filter=U').stdout.splitlines()
+            tgit('rebase', '--abort')   # fails when no rebase started (network): nothing to undo
+            if files:
+                sys.exit('sync stopped: %s changed on both sides. Nothing lost, nothing pushed. Fix by hand: git -C %s pull --rebase, resolve, '
+                         'git add, git rebase --continue, then sync again.' % (', '.join(files), HERE))
             sys.exit(r.stderr.strip() or 'git pull failed')
-    r = tgit('push', '-q')
-    if r.returncode:
-        sys.exit(r.stderr.strip() or 'git push failed')
+        all_tickets(strict=True)
     # a new process: the pull may have changed config.json, which this one read at start
     if subprocess.run([sys.executable, os.path.abspath(__file__), 'board']).returncode:
         sys.exit('board failed after sync')
+    r = tgit('push', '-q')
+    if r.returncode:
+        sys.exit(r.stderr.strip() or 'git push failed')
     print('synced with', up.stdout.strip())
 
 
 def commit_hook() -> None:
     h, _, subject = git('log', '-1', '--format=%h%n%s').partition('\n')
     ids = ids_in_subject(subject)
+    if ids and (why := busy()):
+        print('tickets: %s; %s not closed. After it: tickets.py done %s --commit %s' % (why, ' '.join(ids), ' '.join(ids), h), file=sys.stderr)
+        return
     moved = set_status(ids, 'done', h) if ids else []
     if moved:
         board()
@@ -491,12 +538,15 @@ def main(argv: List[str]) -> None:
         with locked():   # a ticket moved during the read would vanish between listdir and open
             ts = all_tickets()
         by_id = {t['id']: t for t in ts}
-        for c in cycles(by_id):
-            print('cycle: ' + ' -> '.join(c), file=sys.stderr)
+        cs = cycles(by_id)
+        for cyc in cs:
+            print('cycle: ' + ' -> '.join(cyc), file=sys.stderr)
+        loops = {i: cyc for cyc in cs for i in cyc}
         for t in sorted(ts, key=lambda t: (STATUS[effective(t, by_id)[0]][1], num(t))):
-            key, _ = effective(t, by_id)
+            key = effective(t, by_id)[0]
             if (key == a.status) if a.status else (key != 'done' or a.all):
-                print('%-6s %-8s %s %-2s %s' % (t['id'], key, DIFF_ICON.get(t['difficulty'], ' '), t['size'], t['title']))
+                nt = note(t, by_id, loops)
+                print('%-6s %-8s %s %-2s %s%s' % (t['id'], key, DIFF_ICON.get(t['difficulty'], '  '), t['size'], t['title'], '  (%s)' % nt if nt else ''))
     elif a.cmd == 'show':
         with locked():
             one = {t['id']: t for t in all_tickets()}.get(a.id)
@@ -506,16 +556,24 @@ def main(argv: List[str]) -> None:
         print(one['path']); print(text, end='')
     elif a.cmd == 'set':
         changed = set_status([a.id], a.status)
-        print('changed:', changed or 'nothing (unknown id)'); board()
+        if changed:
+            print('%s: %s' % (a.id, a.status))
+        board()
         if changed:
             auto_commit('%s: %s' % (a.id, a.status))
+        if not changed:
+            sys.exit(1)
     elif a.cmd == 'done':
         changed = set_status(a.ids, 'done', a.commit)
-        print('done:', changed or 'nothing (unknown id)'); board()
+        if changed:
+            print('done: ' + ', '.join(changed))
+        board()
         if changed:
             auto_commit('Done: %s%s' % (', '.join(changed), ' (%s)' % a.commit if a.commit else ''))
+        if len(changed) < len(set(a.ids)):
+            sys.exit(1)
     elif a.cmd == 'board' or a.cmd is None:
-        board()
+        print('wrote', os.path.join(HERE, 'board.html'), board())
     elif a.cmd == 'sync':
         sync()
     elif a.cmd == 'commit-hook':
