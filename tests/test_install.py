@@ -7,6 +7,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOURCE = None
+LINE = 'Tickets live in .tickets/ (its own git repo). Before working on a ticket or adding one, read .tickets/WORKFLOW.md.'
 
 
 def setUpModule():
@@ -212,6 +213,7 @@ class FirstInstallConfig(unittest.TestCase):
         sh('git', 'init', '-q', cwd=self.repo)
         self.cfg = os.path.join(self.repo, '.tickets', 'config.json')
         self.hook = os.path.join(self.repo, '.git', 'hooks', 'post-commit')
+        self.agents = os.path.join(self.repo, 'AGENTS.md')
 
     def test_non_interactive_uses_defaults(self):
         r = subprocess.run([os.path.join(SOURCE, 'install.sh'), self.repo], capture_output=True, text=True,
@@ -239,17 +241,20 @@ class FirstInstallConfig(unittest.TestCase):
         self.assertEqual(json.load(open(self.cfg))['mode'], 'validate')
         self.assertNotIn('Change any setting', r.stdout)
 
-    def ask(self, answers):
-        """Run install.sh with a pty as stdin and type the answers (one line each)."""
+    def ask(self, answers, line=''):
+        """Run install.sh with a pty as stdin and type the answers (one line each).
+        `line` answers the last question (add the ticket line to AGENTS.md); None: it is not asked. Returns the output."""
         import pty
         pid, fd = pty.fork()
         if pid == 0:
             os.execv(os.path.join(SOURCE, 'install.sh'), ['install.sh', self.repo])
         out = b''
-        for a in answers:
+        full = b''
+        for a in answers if line is None else [*answers, line]:
             while not out.rstrip().endswith((b']', b']:')) and not out.endswith(b': '):
                 out += os.read(fd, 4096)
             os.write(fd, a.encode() + b'\n')
+            full += out
             out = b''
         while True:
             try:
@@ -258,8 +263,10 @@ class FirstInstallConfig(unittest.TestCase):
                 break
             if not chunk:
                 break
+            full += chunk
         _, status = os.waitpid(pid, 0)
         self.assertEqual(status, 0)
+        return full.decode()
 
     def test_interactive_answers(self):
         self.ask(['', 'Shop', 'y', '/srv/wt/shop', 'n'])
@@ -347,6 +354,58 @@ class FirstInstallConfig(unittest.TestCase):
                            stdin=subprocess.DEVNULL, check=True)
         self.assertIn('updated', r.stdout)
         self.assertFalse(os.path.exists(os.path.join(self.repo, '.tickets')))
+
+    def test_no_terminal_no_agents_file_prints_the_line(self):
+        r = subprocess.run([os.path.join(SOURCE, 'install.sh'), self.repo], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, check=True)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, 'AGENTS.md')))
+        self.assertIn("Add this line to the project's AGENTS.md:\n  " + LINE, r.stdout)
+
+    def test_terminal_enter_adds_the_line_and_update_is_quiet(self):
+        out = self.ask(['', '', '', ''])
+        self.assertIn('added the ticket line to ' + self.agents, out)
+        self.assertEqual(open(self.agents).read(), LINE + '\n')
+        out = self.ask([], line=None)   # update on a terminal: nothing asked
+        self.assertNotIn('ticket line', out)
+        self.assertNotIn('Add this line', out)
+        self.assertEqual(open(self.agents).read(), LINE + '\n')
+
+    def test_terminal_answer_no_changes_nothing(self):
+        out = self.ask(['', '', '', ''], line='n')
+        self.assertFalse(os.path.exists(self.agents))
+        self.assertIn("Add this line to the project's AGENTS.md:", out)
+
+    def test_line_is_appended_after_a_missing_newline(self):
+        open(self.agents, 'w').write('# Rules')
+        self.ask(['', '', '', ''])
+        self.assertEqual(open(self.agents).read(), '# Rules\n' + LINE + '\n')
+
+    def test_agents_file_that_has_the_line_is_left_alone(self):
+        open(self.agents, 'w').write('See .tickets/WORKFLOW.md\n')
+        out = self.ask(['', '', '', ''], line=None)
+        self.assertNotIn('ticket line', out)
+        self.assertNotIn('Add this line', out)
+        self.assertEqual(open(self.agents).read(), 'See .tickets/WORKFLOW.md\n')
+
+    def test_line_in_claude_local_md_only_changes_nothing(self):
+        local = os.path.join(self.repo, 'CLAUDE.local.md')
+        open(local, 'w').write('Read .tickets/WORKFLOW.md\n')
+        out = self.ask(['', '', '', ''], line=None)
+        self.assertNotIn('Add this line', out)
+        self.assertNotIn('note:', out)
+        self.assertFalse(os.path.exists(self.agents))
+
+    def test_note_when_claude_md_does_not_import_agents_md(self):
+        open(self.agents, 'w').write('Read .tickets/WORKFLOW.md\n')
+        claude = os.path.join(self.repo, 'CLAUDE.md')
+        open(claude, 'w').write('# Mine\n')
+        out = self.ask(['', '', '', ''], line=None)
+        self.assertIn('note: Claude reads CLAUDE.md instead of AGENTS.md: add @AGENTS.md to it', out)
+        for fix in (lambda: open(claude, 'w').write('@AGENTS.md\n'), lambda: (os.remove(claude), os.symlink('AGENTS.md', claude))):
+            fix()   # an import, then a symlink to AGENTS.md: no note
+            r = subprocess.run([os.path.join(SOURCE, 'install.sh'), self.repo], capture_output=True, text=True,
+                               stdin=subprocess.DEVNULL, check=True)
+            self.assertNotIn('note:', r.stdout)
 
 
 if __name__ == '__main__':

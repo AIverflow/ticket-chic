@@ -122,6 +122,22 @@ if git -C "$proj" rev-parse >/dev/null 2>&1; then
 else
   echo "not a git repo: hook not installed (run this script again once it is one)"
 fi
+has() { grep -qF "$tdir/WORKFLOW.md" "$proj/$1" 2>/dev/null; }   # a missing file is fine
+if ! has AGENTS.md && ! has CLAUDE.md && ! has CLAUDE.local.md; then
+  line="Tickets live in $tdir/ (its own git repo). Before working on a ticket or adding one, read $tdir/WORKFLOW.md."
+  a=n; [ ! -t 0 ] || { printf 'Add the ticket line to AGENTS.md? [Y/n] '; read -r a || a=; }
+  case $a in
+    [nN]*) echo "Add this line to the project's AGENTS.md:"; echo "  $line" ;;
+    *) f="$proj/AGENTS.md"
+       { [ ! -s "$f" ] || [ -z "$(tail -c1 "$f")" ] || echo; echo "$line"; } >> "$f"
+       echo "added the ticket line to $f" ;;
+  esac
+fi
+for c in CLAUDE.md CLAUDE.local.md; do   # Claude reads these instead of AGENTS.md
+  if has AGENTS.md && [ -e "$proj/$c" ] && [ ! "$proj/$c" -ef "$proj/AGENTS.md" ] && ! has "$c" && ! grep -qF @AGENTS.md "$proj/$c"; then
+    echo "note: Claude reads $c instead of AGENTS.md: add @AGENTS.md to it"
+  fi
+done
 python3 "$dst/tickets.py" board
 if [ -n "$first" ]; then
   echo
@@ -131,8 +147,7 @@ if [ -n "$first" ]; then
   echo "Change any setting in $tdir/config.json (see README, Settings)."
   echo
   echo "Next steps:"
-  n=1
-  echo "  $n. Add this line to the project's AGENTS.md: Before any ticket, read $tdir/WORKFLOW.md"
+  n=0
   if [ -n "$added" ]; then n=$((n + 1)); echo "  $n. Commit .gitignore in the project (it now ignores $tdir)"; fi
   n=$((n + 1)); echo "  $n. Open the board: file://$dst/board.html"
 fi

@@ -8,7 +8,7 @@ Before each ticket, read the switches in `.tickets/config.json`. A missing key m
 
 | Key | Default | Meaning |
 |---|---|---|
-| `auto_commit` | `true` | `tickets.py` commits `.tickets/` after every change (new, set, done, hook): `New: T12`, `T12: doing`, `Done: T12 (<hash>)`. If it cannot (not its own repo, rebase in progress) it warns and goes on. Never pushes. If off, commit the changes yourself on `main` in `.tickets/` |
+| `auto_commit` | `true` | `tickets.py` commits `.tickets/` after every change (new, set, done, hook): `New: T12`, `T12: doing`, `Done: T12 (<hash>)`. If `.tickets/` is not its own repo, it warns and goes on. During a rebase or merge in `.tickets/` it changes nothing: commands stop, and the hook prints the `done` command to run afterwards. Never pushes. If off, commit the changes yourself on `main` in `.tickets/` |
 | `roles` | `true` | follow `modules/roles.md` |
 | `worktrees` | `false` | allow a worktree per parallel ticket; if true, follow `modules/worktrees.md` |
 | `worktree_dir` | none | full path of the folder for worktrees (see `modules/worktrees.md`) |
@@ -125,4 +125,4 @@ In `.tickets/modules/`; the switches in `config.json` say which ones apply.
 - [`modules/roles.md`](modules/roles.md) (`roles`): orchestrator / implementer / reviewer, agent tiers, STOP rule.
 
 ## In the project
-The project's `AGENTS.md` needs one line: "Before any ticket, read `.tickets/WORKFLOW.md`." Test commands, invariants and commit style stay in `AGENTS.md`, not here.
+The project's `AGENTS.md` needs one line saying the tickets are in `.tickets/` and to read `.tickets/WORKFLOW.md` first. `install.sh` checks for it on every run and offers to add it. If the project has a `CLAUDE.md`, Claude reads that instead of `AGENTS.md`: it needs `@AGENTS.md` in it. Test commands, invariants and commit style stay in `AGENTS.md`, not here.
