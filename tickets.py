@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Ticket tool. One markdown file per ticket in .tickets/ (open) or .tickets/done/ (finished).
+"""Ticket tool. One markdown file per ticket in the ticket folder (.tickets/ by default; open) or its done/ (finished).
 Each file starts with a frontmatter block (status, difficulty, size, blocked_by).
   tickets.py new "Title" [-d 1|2|3] [-s S|M|L] [-b T1,T2]   create the next ticket
-  tickets.py list [<status>] [--all]                         print the tickets (only that status if given)
-  tickets.py show T12                                        print one ticket file
+  tickets.py list [<status>] [--all]                         print the tickets (only that status if given); warns on blocked_by cycles
+  tickets.py show T12                                        print one ticket file (show, set, done take any case: t12)
   tickets.py set T12 <status>                                change status (done moves the file to done/)
   tickets.py done T12 [T13 ...] [--commit <hash>]            same as set <id> done
   tickets.py board                                           write board.html (filters, search, details)
@@ -19,6 +19,7 @@ import argparse
 import contextlib
 import getpass
 import html
+import io
 import json
 import os
 import re
@@ -26,7 +27,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 fcntl: Any
 try:
@@ -36,7 +37,7 @@ except ImportError:   # no fcntl (Windows): locked() does nothing there
 
 Ticket = Dict[str, Any]
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.realpath(__file__))   # realpath: a symlinked .tickets points at the real folder
 DONE_DIR = os.path.join(HERE, 'done')
 
 DEFAULT_STATUSES = [
@@ -51,7 +52,7 @@ DIFF_ICON = {'1': '🟢', '2': '🟡', '3': '🔴'}
 
 
 def read(path: str) -> str:
-    with open(path, encoding='utf-8') as f:
+    with open(path, encoding='utf-8-sig') as f:
         return f.read()
 
 
@@ -119,6 +120,16 @@ FIRST = 'open' if 'open' in STATUS else next((k for k in STATUS if k not in ('bl
 ID_RE = re.compile(r'\b%s\d+[a-z]?\b' % PREFIX)
 FILE_RE = re.compile(r'^(%s\d+[a-z]?)(?:-.*)?\.md$' % PREFIX)
 FM_RE = re.compile(r'\A---\n(.*?)\n---[ \t]*\n?(.*)\Z', re.S)
+
+
+def norm_id(raw: str) -> str:
+    """ID as typed: ' t12 ' -> 'T12', 'T12A' -> 'T12a'. Anything else is returned stripped, so it is reported as unknown."""
+    s = raw.strip()
+    m = re.fullmatch(r'([A-Za-z]+)(\d+)([A-Za-z]?)', s)
+    prefix = next((p for p in PREFIXES if m and p.upper() == m.group(1).upper()), None)
+    if not m or prefix is None:
+        return s
+    return '%s%s%s' % (prefix, m.group(2), m.group(3).lower())
 
 
 # ---------- reading and writing ticket files
@@ -274,6 +285,24 @@ def effective(t: Ticket, by_id: Dict[str, Ticket]) -> Tuple[str, List[str]]:
     return t['status'], waiting
 
 
+def cycles(by_id: Dict[str, Ticket]) -> List[List[str]]:
+    """Cycles in blocked_by among unfinished tickets, e.g. [['T1', 'T2', 'T1']]. A done ticket breaks a cycle."""
+    found: List[List[str]] = []
+    seen: Set[str] = set()
+    def walk(i: str, path: List[str]) -> None:
+        if i in path:
+            found.append(path[path.index(i):] + [i])
+        elif i not in seen:
+            seen.add(i)
+            for b in by_id[i]['blocked_by']:
+                if b in by_id and by_id[b]['status'] != 'done':
+                    walk(b, path + [i])
+    for i, t in by_id.items():
+        if t['status'] != 'done':
+            walk(i, [])
+    return found
+
+
 # ---------- board
 
 def board() -> None:
@@ -284,13 +313,14 @@ def board() -> None:
 def write_board() -> None:
     ts = all_tickets()
     by_id = {t['id']: t for t in ts}
+    loops = {i: c for c in cycles(by_id) for i in c}
     rows: List[str] = []
     counts = dict.fromkeys(STATUS, 0)
     for t in sorted(ts, key=lambda t: (STATUS[effective(t, by_id)[0]][1], -num(t)[0] if t['status'] == 'done' else num(t)[0])):
         key, waiting = effective(t, by_id)
         counts[key] += 1
         label, _, col = STATUS[key]
-        wait = ('waits for ' + ', '.join(waiting)) if waiting else ', '.join(t['blocked_by'])
+        wait = ('cycle: ' + ' -> '.join(loops[t['id']])) if t['id'] in loops else ('waits for ' + ', '.join(waiting)) if waiting else ', '.join(t['blocked_by'])
         rows.append(
             f'<tr class="r" data-k="{html.escape(key)}" data-q="{html.escape((t["id"] + " " + t["title"]).lower())}">'
             f'<td class="id">{html.escape(t["id"])}</td><td>{DIFF_ICON.get(t["difficulty"], "")}</td><td>{html.escape(t["size"])}</td>'
@@ -319,7 +349,7 @@ pre{{white-space:pre-wrap;background:#161b22;border:1px solid #30363d;border-rad
 .hide{{display:none}}
 </style>
 <h1>{title} · tickets</h1>
-<div class="sub">Generated {time.strftime('%Y-%m-%d %H:%M')} · refresh: <code>python3 .tickets/tickets.py board</code></div>
+<div class="sub">Generated {time.strftime('%Y-%m-%d %H:%M')} · refresh: <code>python3 {html.escape(os.path.basename(HERE))}/tickets.py board</code></div>
 <div class="bar">{chips}<input id="q" placeholder="search id or title"></div>
 <table><thead><tr><th>ID</th><th>Diff</th><th>Size</th><th>Title</th><th>Status</th><th>Note</th></tr></thead><tbody>{''.join(rows)}</tbody></table>
 <script>
@@ -445,9 +475,9 @@ def main(argv: List[str]) -> None:
     n.add_argument('-d', '--difficulty', choices=list(DIFF_ICON)); n.add_argument('-s', '--size', choices=['S', 'M', 'L', 's', 'm', 'l'])
     n.add_argument('-b', '--blocked-by', default='')
     ls = sub.add_parser('list'); ls.add_argument('status', nargs='?'); ls.add_argument('--all', action='store_true')
-    sh = sub.add_parser('show'); sh.add_argument('id')
-    s = sub.add_parser('set'); s.add_argument('id'); s.add_argument('status')
-    d = sub.add_parser('done'); d.add_argument('ids', nargs='+'); d.add_argument('--commit', default='')
+    sh = sub.add_parser('show'); sh.add_argument('id', type=norm_id)
+    s = sub.add_parser('set'); s.add_argument('id', type=norm_id); s.add_argument('status')
+    d = sub.add_parser('done'); d.add_argument('ids', nargs='+', type=norm_id); d.add_argument('--commit', default='')
     for c in ('board', 'sync', 'commit-hook'):
         sub.add_parser(c)
     a = ap.parse_args(argv)
@@ -461,6 +491,8 @@ def main(argv: List[str]) -> None:
         with locked():   # a ticket moved during the read would vanish between listdir and open
             ts = all_tickets()
         by_id = {t['id']: t for t in ts}
+        for c in cycles(by_id):
+            print('cycle: ' + ' -> '.join(c), file=sys.stderr)
         for t in sorted(ts, key=lambda t: (STATUS[effective(t, by_id)[0]][1], num(t))):
             key, _ = effective(t, by_id)
             if (key == a.status) if a.status else (key != 'done' or a.all):
@@ -491,4 +523,6 @@ def main(argv: List[str]) -> None:
 
 
 if __name__ == '__main__':
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(errors='replace')
     main(sys.argv[1:])

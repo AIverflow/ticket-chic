@@ -1,3 +1,5 @@
+In a project's ticket folder: this file is for ticket-chic developers only. Ignore it and follow WORKFLOW.md.
+
 # ticketing: agent guide
 
 Generic ticket system (see `README.md`). It is copied into other projects, so it must stay small and project-neutral.

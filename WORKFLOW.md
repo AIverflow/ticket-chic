@@ -17,7 +17,7 @@ Before each ticket, read the switches in `.tickets/config.json`. A missing key m
 `tickets.py` uses `auto_commit` and the board settings, and only checks that `mode` is valid; the other keys are for agents.
 
 ## Files
-Everything lives in `.tickets/`:
+Everything lives in `.tickets/` (the default name; install lets Dave pick another, and then it is that name everywhere here):
 - `T<n>-<slug>.md`: one file per open ticket.
 - `done/T<n>-<slug>.md`: finished tickets (same file, moved).
 - `board.html`: the table Dave reads (status filters, search, details). Built by `tickets.py`, never edited.
@@ -58,6 +58,7 @@ Every key is optional (no title: the ID is shown; no status: `open`). Free text 
 
 - Easy to mix up: **open** = not ready (idea, unclear) · **ready** = clear, can start · **blocked** = waits for something.
 - A `ready` or `open` ticket whose `blocked_by` tickets are not all done shows as **blocked** on the board. Nothing to edit: it becomes ready again when they are done.
+- `list` warns on stderr, and the board shows it, when unfinished tickets block each other in a loop (`cycle: T1 -> T2 -> T1`): they would wait forever. Edit `blocked_by` to break it.
 - Statuses are configurable in `config.json` (`done` must stay).
 
 ## Two scores
@@ -83,6 +84,8 @@ Optional, independent. Judge each on its own question.
 | `board` | rewrites `board.html` |
 | `sync` | commits `.tickets/`, then pulls and pushes if `main` in `.tickets/` has a remote (see README, optional) |
 
+`show`, `set` and `done` accept an ID in any case with extra spaces (`t12`, `T12A` is `T12a`).
+
 **The hook finishes tickets.** A commit whose subject ends with ticket ID(s) in parentheses, e.g. `Login: retry after timeout (T88)` or `(T64, T67 to T71)`, moves them to `done/` with the commit hash and rebuilds the board. It works in every worktree too, even before the merge.
 So: **an ID in parentheses at the end of the subject means finished. Never use it for partial work** (write `T88 part 1` without parentheses).
 An ID that matches no ticket changes nothing and prints `unknown ticket id`. After the closing commit, check that `done/<ID>-*.md` exists; if not, run `tickets.py done <ID> --commit <hash>`.
@@ -95,7 +98,7 @@ Dave picks the mode when he asks for the work ("chain" / "validate"). When he sa
 **validate**: for a big or delicate ticket.
 1. Commit your work as you go on the ticket's branch **without** `(T12)`, so nothing is lost uncommitted and the ticket stays open.
 2. Review (an agent reviewer if `roles`, then Dave).
-3. Only after Dave's OK, close it: merge with `git merge --no-ff -m "<what changed> (T12)"`, or make a final small commit with the ID. A fast-forward merge makes no commit, so it cannot close a ticket: use fast-forward only in chain.
+3. Only after Dave's OK, close it: `git merge --no-ff --no-commit T12 && git commit -m "<what changed> (T12)"`, or make a final small commit with the ID. Plain `git merge` runs no commit hook, so it cannot close a ticket; the commit after `--no-commit` does. A fast-forward merge makes no commit either: use fast-forward only in chain.
 
 ## Where the work happens
 | Work | Place |

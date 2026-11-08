@@ -182,6 +182,26 @@ class InstallHook(unittest.TestCase):
         self.assertEqual(sh('git', 'rev-parse', 'scratch', cwd=t), sh('git', 'rev-parse', 'main', cwd=t))
         self.assertNotEqual(sh('git', 'rev-parse', 'core', cwd=t), sh('git', 'rev-parse', 'scratch', cwd=t))
 
+    def test_conflicting_update_is_aborted(self):
+        self.install()
+        t = os.path.join(self.repo, '.tickets')
+        sh('git', 'config', 'user.email', 'a@b.c', cwd=t)
+        sh('git', 'config', 'user.name', 'x', cwd=t)
+        other = os.path.join(self.tmp.name, 'other')
+        sh('git', 'clone', '-q', '-b', 'core', SOURCE, other)
+        for folder, text in ((t, 'mine'), (other, 'core')):   # the same line, two ways
+            path = os.path.join(folder, 'tickets.py')
+            lines = open(path).read().split('\n')
+            lines[1] += ' # ' + text
+            open(path, 'w').write('\n'.join(lines))
+            sh('git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qam', text, cwd=folder)
+        r = self.run_install(script=os.path.join(other, 'install.sh'))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('tickets.py', r.stdout)
+        self.assertIn('Nothing changed', r.stdout)
+        self.assertFalse(os.path.exists(os.path.join(t, '.git', 'MERGE_HEAD')))
+        self.assertNotIn('<<<<<<<', open(os.path.join(t, 'tickets.py')).read())
+
 
 class FirstInstallConfig(unittest.TestCase):
     def setUp(self):
@@ -201,6 +221,13 @@ class FirstInstallConfig(unittest.TestCase):
         self.assertTrue(os.path.exists(self.hook))
         self.assertIn('Change any setting in .tickets/config.json', r.stdout)
         self.assertEqual(sh('git', 'status', '--porcelain', cwd=os.path.join(self.repo, '.tickets')), '')   # config is committed
+
+    def test_first_run_prints_next_steps(self):
+        r = subprocess.run([os.path.join(SOURCE, 'install.sh'), self.repo], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, check=True)
+        self.assertIn('read .tickets/WORKFLOW.md', r.stdout)
+        self.assertIn('Commit .gitignore', r.stdout)
+        self.assertIn('board.html', r.stdout)
 
     def test_update_keeps_config_and_prints_no_recap(self):
         subprocess.run([os.path.join(SOURCE, 'install.sh'), self.repo], capture_output=True, stdin=subprocess.DEVNULL, check=True)
@@ -235,29 +262,91 @@ class FirstInstallConfig(unittest.TestCase):
         self.assertEqual(status, 0)
 
     def test_interactive_answers(self):
-        self.ask(['Shop', 'y', '/srv/wt/shop', 'n'])
+        self.ask(['', 'Shop', 'y', '/srv/wt/shop', 'n'])
         c = json.load(open(self.cfg))
         self.assertEqual((c['title'], c['worktrees'], c['worktree_dir']), ('Shop', True, '/srv/wt/shop'))
         self.assertFalse(os.path.exists(self.hook))
 
     def test_interactive_relative_worktree_folder_is_rejected_then_full_path_accepted(self):
-        self.ask(['Shop', 'y', 'rel/dir', '../x', '/srv/wt/shop', 'n'])
+        self.ask(['', 'Shop', 'y', 'rel/dir', '../x', '/srv/wt/shop', 'n'])
         self.assertEqual(json.load(open(self.cfg))['worktree_dir'], '/srv/wt/shop')
 
     def test_interactive_tilde_worktree_folder_is_expanded(self):
-        self.ask(['Shop', 'y', '~/wt/shop', 'n'])
+        self.ask(['', 'Shop', 'y', '~/wt/shop', 'n'])
         self.assertEqual(json.load(open(self.cfg))['worktree_dir'], os.path.expanduser('~/wt/shop'))
 
     def test_interactive_enter_gives_defaults(self):
-        self.ask(['', '', ''])
+        self.ask(['', '', '', ''])
         c = json.load(open(self.cfg))
         self.assertEqual((c['title'], c['worktrees']), ('My App', False))
         self.assertNotIn('worktree_dir', c)
         self.assertTrue(os.path.exists(self.hook))
 
     def test_interactive_default_worktree_folder_is_expanded(self):
-        self.ask(['', 'y', '', ''])
+        self.ask(['', '', 'y', '', ''])
         self.assertEqual(json.load(open(self.cfg))['worktree_dir'], os.path.expanduser('~/worktrees/My App'))
+
+    def test_custom_folder_name_update_and_hook(self):
+        self.ask(['a/b', '..', 'tk', '', '', ''])   # bad names are asked again
+        tk = os.path.join(self.repo, 'tk')
+        self.assertTrue(os.path.exists(os.path.join(tk, 'config.json')))
+        self.assertFalse(os.path.exists(os.path.join(self.repo, '.tickets')))
+        self.assertEqual(open(os.path.join(self.repo, '.gitignore')).read(), 'tk\n')
+        self.assertIn("dir='tk'", open(self.hook).read())
+        hook = open(self.hook).read()
+        r = subprocess.run([os.path.join(SOURCE, 'install.sh'), self.repo], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, check=True)   # update: finds tk, creates nothing else
+        self.assertIn('updated', r.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, '.tickets')))
+        self.assertEqual(open(self.hook).read(), hook)
+        self.assertEqual(open(os.path.join(self.repo, '.gitignore')).read(), 'tk\n')
+        for k, v in (('user.email', 'a@b.c'), ('user.name', 'x')):
+            sh('git', 'config', k, v, cwd=self.repo)
+        sh('python3', os.path.join(tk, 'tickets.py'), 'new', 'Thing')
+        open(os.path.join(self.repo, 'f'), 'w').write('1')
+        sh('git', 'add', 'f', cwd=self.repo)
+        sh('git', 'commit', '-qm', 'Do thing (T1)', cwd=self.repo)
+        self.assertEqual(os.listdir(os.path.join(tk, 'done')), ['T1-thing.md'])
+
+    def test_folder_name_is_cleaned(self):
+        for answer in ('./foo', 'foo/', './foo/'):
+            with self.subTest(answer=answer):
+                shutil.rmtree(self.repo)
+                os.mkdir(self.repo)
+                sh('git', 'init', '-q', cwd=self.repo)
+                self.ask([answer, '', '', ''])
+                self.assertTrue(os.path.exists(os.path.join(self.repo, 'foo', 'config.json')))
+                self.assertEqual(open(os.path.join(self.repo, '.gitignore')).read(), 'foo\n')
+                self.assertIn("dir='foo'", open(self.hook).read())
+
+    def test_unsafe_folder_names_are_refused_then_valid_accepted(self):
+        self.ask(['*', 'a/b', '#x', '-x', '../x', '/abs', 'a b', '.foo', '', '', ''])
+        self.assertTrue(os.path.exists(os.path.join(self.repo, '.foo', 'config.json')))
+        self.assertEqual(open(os.path.join(self.repo, '.gitignore')).read(), '.foo\n')
+
+    def test_declined_hook_stays_declined_on_update_without_terminal(self):
+        self.ask(['', '', '', 'n'])
+        self.assertFalse(os.path.exists(self.hook))
+        r = subprocess.run([os.path.join(SOURCE, 'install.sh'), self.repo], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, check=True)
+        self.assertFalse(os.path.exists(self.hook))
+        self.assertIn('hook not installed. To add it', r.stdout)
+
+    def test_existing_hook_is_refreshed_on_update(self):
+        subprocess.run([os.path.join(SOURCE, 'install.sh'), self.repo], capture_output=True, stdin=subprocess.DEVNULL, check=True)
+        open(self.hook, 'a').write('# stale\n')
+        subprocess.run([os.path.join(SOURCE, 'install.sh'), self.repo], capture_output=True, stdin=subprocess.DEVNULL, check=True)
+        text = open(self.hook).read()
+        self.assertIn('# ticketing-hook', text)
+        self.assertNotIn('# stale', text)
+
+    def test_hook_less_install_is_still_found_on_update(self):
+        self.ask(['tk', '', '', 'n'])
+        self.assertFalse(os.path.exists(self.hook))
+        r = subprocess.run([os.path.join(SOURCE, 'install.sh'), self.repo], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, check=True)
+        self.assertIn('updated', r.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, '.tickets')))
 
 
 if __name__ == '__main__':

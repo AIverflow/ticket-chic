@@ -2,7 +2,7 @@
 
 A minimal ticket system for your projects and the AI agents working on them. It needs only git and Python, no packages.
 
-- **Minimal.** One Python file (about 490 lines, standard library only).
+- **Minimal.** One Python file (about 520 lines, standard library only).
 - **Plain files.** One markdown file per ticket in `.tickets/`. Read, grep and diff them like code.
 - **A real board.** `board.html` is a static page with filters, search and the full text of each ticket. No server.
 - **Commits close tickets.** End a commit subject with `(T12)` and a git hook moves T12 to `done/`.
@@ -12,10 +12,10 @@ A minimal ticket system for your projects and the AI agents working on them. It 
 
 ## Install
 1. From the ticket-chic folder run `./install.sh /path/to/project`.
-2. Answer 3 questions (Enter takes the default; without a terminal it uses the defaults): the board title, whether to use git worktrees for parallel tickets (and their folder, as a full path), and whether to install the git hook.
+2. Answer 4 questions (Enter takes the default; without a terminal it uses the defaults): the ticket folder name (default `.tickets`, used for every `.tickets/` in these docs; letters, digits, `.`, `_`, `-`), the board title, whether to use git worktrees for parallel tickets (and their folder, as a full path), and whether to install the git hook.
 3. Add one line to the project's `AGENTS.md`: "Before any ticket, read `.tickets/WORKFLOW.md`."
 
-Run `install.sh` again later to update. Your tickets and config stay.
+Run `install.sh` again later to update. It finds the ticket folder itself and asks nothing (except whether to add the git hook, when there is none). Your tickets and config stay.
 
 ## Four ways to work
 **A list of small fixes.** Say "do T3, T4, T5". This is `chain` mode, the default. The agent does them one after another, one commit each; the hook closes each ticket. You test in the project folder, on the project's `main`, after the series.
@@ -39,7 +39,7 @@ python3 .tickets/tickets.py list         # or: list ready
 python3 .tickets/tickets.py board        # then open .tickets/board.html
 git commit -m "Fix export on empty list (T3)"   # the hook moves T3 to done/
 ```
-Also `show T3`, `done T3`, `sync`.
+Also `show T3`, `done T3`, `sync`. IDs may be lowercase or have spaces (`t3`). `list` warns if tickets block each other in a loop.
 
 # Part 2: How it works
 

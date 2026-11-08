@@ -75,7 +75,7 @@ class Tickets(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.p.dir, '.git/hooks/post-commit')))
         self.assertEqual(self.p.tg('branch', '--show-current').strip(), 'main')
         self.assertIn('core', self.p.tg('branch'))
-        self.assertIn('.tickets/', self.p.read_root('.gitignore'))
+        self.assertIn('.tickets\n', self.p.read_root('.gitignore'))
 
     def test_update_merges_core_and_keeps_project_files(self):
         self.p.tk('new', 'Mine')   # auto_commit commits it
@@ -133,6 +133,40 @@ class Tickets(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             self.p.tk('list', 'nonsense')
 
+    def test_bom_file_is_read_and_rewritten_with_one_frontmatter(self):
+        with open(os.path.join(self.p.t, 'T1-bom.md'), 'w', encoding='utf-8') as f:
+            f.write('﻿---\ntitle: Bom\nstatus: ready\n---\n')
+        self.assertIn('Bom', self.p.tk('list', 'ready'))
+        self.p.tk('set', 'T1', 'doing')
+        txt = self.p.read('T1-bom.md')
+        self.assertIn('status: doing', txt)
+        self.assertEqual(txt.count('---'), 2)
+
+    def test_list_survives_non_utf8_stdout(self):
+        self.p.tk('new', 'Yellow', '-d', '2')
+        r = subprocess.run([sys.executable, os.path.join(self.p.t, 'tickets.py'), 'list'], cwd=self.p.dir,
+                           capture_output=True, text=True, env=dict(os.environ, PYTHONIOENCODING='cp1252'))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('Yellow', r.stdout)
+
+    def test_ids_ignore_case_and_spaces(self):
+        for i in range(1, 13):
+            self.p.tk('new', 'Ticket %d' % i)
+        open(os.path.join(self.p.t, 'T12a-sub.md'), 'w', encoding='utf-8').write('---\ntitle: Sub\nstatus: open\n---\n')
+        self.assertIn('title: Ticket 12', self.p.tk('show', 't12'))
+        self.assertIn('title: Ticket 12', self.p.tk('show', ' T12 '))
+        self.assertIn('title: Sub', self.p.tk('show', 't12a'))
+        self.p.tk('set', ' T12 ', 'ready')
+        self.assertIn('status: ready', self.p.read('T12-ticket-12.md'))
+        self.p.tk('set', 't12A', 'parked')
+        self.assertIn('status: parked', self.p.read('T12a-sub.md'))
+        self.p.tk('done', 't3', ' T4 ')
+        self.assertTrue(self.p.exists('done', 'T3-ticket-3.md'))
+        self.assertTrue(self.p.exists('done', 'T4-ticket-4.md'))
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.p.tk('show', ' t99 ')
+        self.assertIn('nothing', self.p.tk('done', ' t99 '))
+
     def test_commit_hook_warns_on_unknown_id(self):
         self.p.tk('new', 'A')
         r = subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', 'Typo (T9)'],
@@ -153,6 +187,28 @@ class Tickets(unittest.TestCase):
         self.assertRegex(self.p.tk('list'), r'T2\s+blocked')
         self.p.tk('done', 'T1')
         self.assertRegex(self.p.tk('list'), r'T2\s+ready')
+
+    def cycle_warnings(self):
+        r = subprocess.run([sys.executable, os.path.join(self.p.t, 'tickets.py'), 'list'], cwd=self.p.dir, capture_output=True, text=True, check=True)
+        return [x for x in r.stderr.splitlines() if x.startswith('cycle')]
+
+    def test_blocked_by_cycle_warns_in_list_and_board(self):
+        self.p.tk('new', 'A', '-b', 'T2'); self.p.tk('new', 'B', '-b', 'T1'); self.p.tk('new', 'C', '-b', 'T2')
+        self.assertEqual(self.cycle_warnings(), ['cycle: T1 -> T2 -> T1'])
+        self.p.tk('board')
+        board = self.p.read('board.html')
+        self.assertIn('cycle: T1 -&gt; T2 -&gt; T1', board)
+        self.assertIn('waits for T2', board)           # C only waits on the loop
+        self.p.tk('done', 'T2')                         # a done ticket breaks it
+        self.assertEqual(self.cycle_warnings(), [])
+
+    def test_blocked_by_self_cycle_warns(self):
+        self.p.tk('new', 'A', '-b', 'T1')
+        self.assertEqual(self.cycle_warnings(), ['cycle: T1 -> T1'])
+
+    def test_blocked_by_chain_is_no_cycle(self):
+        self.p.tk('new', 'A'); self.p.tk('new', 'B', '-b', 'T1'); self.p.tk('new', 'C', '-b', 'T2, T1')
+        self.assertEqual(self.cycle_warnings(), [])
 
     def test_board_lists_tickets_and_escapes(self):
         self.p.tk('new', 'Fix <b>markup</b>', '-d', '3')
@@ -436,6 +492,19 @@ class Safety(unittest.TestCase):
             self.p.tk('done', 'T1')
         self.assertEqual(os.listdir(outside), [])
         self.assertEqual(self.p.files(), ['T1-a.md'])
+
+    def test_ticket_folder_as_symlink(self):
+        self.p.tk('new', 'A')
+        self.p.sh('git', 'check-ignore', '-q', '.tickets')   # .gitignore has the bare name: it matches a symlink
+        real = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, real)
+        target = os.path.join(real, 'tickets')
+        os.rename(self.p.t, target)
+        os.symlink(target, self.p.t)
+        self.assertIn('T1', self.p.tk('list'))
+        self.p.tk('done', 'T1')
+        self.assertEqual(os.listdir(os.path.join(target, 'done')), ['T1-a.md'])
+        self.assertFalse(os.path.exists(os.path.join(target, 'T1-a.md')))
 
     def test_symlinked_board_is_replaced_not_followed(self):
         outside = os.path.join(self.p.dir, 'precious')
